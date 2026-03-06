@@ -125,6 +125,44 @@ function showToast(msg, type = 'info') {
     }, 3500);
 }
 
+// Confirm modal — returns Promise<boolean>
+function showConfirm(title, message, { danger = false, confirmText = 'confirm', cancelText = 'cancel' } = {}) {
+    return new Promise((resolve) => {
+        document.getElementById('confirm-modal')?.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'confirm-modal';
+        overlay.className = 'modal-overlay';
+        const msgHtml = message.replace(/\n/g, '<br>');
+        overlay.innerHTML = `
+            <div class="modal-dialog" style="width:380px">
+                <div class="modal-header">
+                    <span class="modal-title">${title}</span>
+                    <button class="modal-close" id="confirm-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="mono-xs" style="line-height:1.6">${msgHtml}</div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-sm" id="confirm-cancel">${cancelText}</button>
+                    <button class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" id="confirm-ok">${confirmText}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const cleanup = (result) => { overlay.remove(); resolve(result); };
+        document.getElementById('confirm-ok').addEventListener('click', () => cleanup(true));
+        document.getElementById('confirm-cancel').addEventListener('click', () => cleanup(false));
+        document.getElementById('confirm-close').addEventListener('click', () => cleanup(false));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
+        document.addEventListener('keydown', function handler(e) {
+            if (e.key === 'Escape') { document.removeEventListener('keydown', handler); cleanup(false); }
+            if (e.key === 'Enter') { document.removeEventListener('keydown', handler); cleanup(true); }
+        });
+        document.getElementById('confirm-ok').focus();
+    });
+}
+
 // ========================
 // Formatting
 // ========================
@@ -229,6 +267,10 @@ const pages = {
         title: 's3 browser', sub: 'browse backup storage',
         render: (el) => { if (typeof S3Browser !== 'undefined') S3Browser.render(el); },
     },
+    database: {
+        title: 'export / import', sub: 'pg_dump & pg_restore',
+        render: (el) => { if (typeof DatabaseIO !== 'undefined') DatabaseIO.render(el); },
+    },
     logs: {
         title: 'logs', sub: 'postgresql log stream',
         render: (el) => { if (typeof LogStream !== 'undefined') LogStream.render(el); },
@@ -248,6 +290,34 @@ const pages = {
     pgbouncer: {
         title: 'pgbouncer', sub: 'connection pool',
         render: (el) => { if (typeof PgBouncerUI !== 'undefined') PgBouncerUI.render(el); },
+    },
+    queries: {
+        title: 'slow queries', sub: 'pg_stat_statements analysis',
+        render: (el) => { if (typeof SlowQueries !== 'undefined') SlowQueries.render(el); },
+    },
+    tables: {
+        title: 'table sizes', sub: 'storage breakdown',
+        render: (el) => { if (typeof TableBrowser !== 'undefined') TableBrowser.render(el); },
+    },
+    vacuum: {
+        title: 'vacuum monitor', sub: 'dead tuples & maintenance',
+        render: (el) => { if (typeof VacuumMonitor !== 'undefined') VacuumMonitor.render(el); },
+    },
+    locks: {
+        title: 'lock monitor', sub: 'real-time lock conflicts',
+        render: (el) => { if (typeof LockMonitor !== 'undefined') LockMonitor.render(el); },
+    },
+    indexes: {
+        title: 'index advisor', sub: 'missing, unused & duplicate',
+        render: (el) => { if (typeof IndexAdvisor !== 'undefined') IndexAdvisor.render(el); },
+    },
+    extensions: {
+        title: 'extensions', sub: 'postgresql extension manager',
+        render: (el) => { if (typeof ExtensionManager !== 'undefined') ExtensionManager.render(el); },
+    },
+    alerts: {
+        title: 'alerts', sub: 'notifications & thresholds',
+        render: (el) => { if (typeof AlertsPage !== 'undefined') AlertsPage.render(el); },
     },
     auth: {
         title: 'totp setup', sub: 'authenticator configuration',

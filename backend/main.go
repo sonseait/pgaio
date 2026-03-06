@@ -102,8 +102,17 @@ func main() {
 	// TOTP authentication
 	totpSvc := service.NewTOTP()
 
+	// Config store (persistent JSON settings)
+	configStore := service.NewConfigStore()
+
+	// Backup scheduler
+	scheduler := service.NewScheduler(walg, configStore)
+
+	// Alerter (health checks + Telegram)
+	alerter := service.NewAlerter(configStore, monitor, walg)
+
 	// HTTP Server
-	srv := server.New(monitor, walg, s3Client, pgbouncer, logPath, pool, totpSvc)
+	srv := server.New(monitor, walg, s3Client, pgbouncer, logPath, pool, totpSvc, configStore, scheduler, alerter)
 	addr := ":" + getEnv("PGAIO_PORT", "8080")
 	httpServer := &http.Server{
 		Addr:         addr,

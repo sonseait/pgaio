@@ -20,7 +20,7 @@ const LogStream = {
             <div class="card" id="log-card" style="padding:0">
                 <pre id="log-output" style="
                     margin:0; padding:8px; font-size:11px; line-height:1.6;
-                    height:calc(100vh - 120px); overflow:auto;
+                    height:calc(100vh - 116px); overflow:auto;
                     color:var(--text-1); white-space:pre-wrap; word-break:break-all;
                 ">loading...</pre>
             </div>
@@ -29,6 +29,7 @@ const LogStream = {
 
         document.getElementById('log-autoscroll').addEventListener('change', (e) => {
             this._autoScroll = e.target.checked;
+            if (this._autoScroll) this.scrollToBottom();
         });
 
         await this.loadRecent();
@@ -41,7 +42,7 @@ const LogStream = {
             const lines = res.data || [];
             const el = document.getElementById('log-output');
             if (el) {
-                el.textContent = lines.join('\n') || 'no logs';
+                el.innerHTML = lines.map(l => this.colorize(l)).join('') || 'no logs';
                 this.scrollToBottom();
             }
         } catch (e) {
@@ -69,7 +70,6 @@ const LogStream = {
     appendLine(line) {
         const el = document.getElementById('log-output');
         if (!el) return;
-        // Color-code log levels
         const colored = this.colorize(line);
         el.insertAdjacentHTML('beforeend', colored);
         // Limit to ~2000 lines
@@ -91,16 +91,19 @@ const LogStream = {
 
     scrollToBottom() {
         if (!this._autoScroll) return;
-        const el = document.getElementById('log-output');
-        if (el) el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+            const el = document.getElementById('log-output');
+            if (el) el.scrollTop = el.scrollHeight;
+        });
     },
 
     clear() {
         const el = document.getElementById('log-output');
-        if (el) el.textContent = '';
+        if (el) el.innerHTML = '';
     },
 
     destroy() {
         if (this._ws) { this._ws.onclose = null; this._ws.close(); this._ws = null; }
     },
 };
+

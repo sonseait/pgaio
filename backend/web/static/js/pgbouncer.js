@@ -86,7 +86,7 @@ const PgBouncerUI = {
     },
 
     async action(act) {
-        if (act === 'kill' && !confirm('Kill all PgBouncer connections?')) return;
+        if (act === 'kill' && !await showConfirm('kill connections', 'Kill all PgBouncer connections?', { danger: true, confirmText: 'kill all' })) return;
         try {
             await apiProtected(`/pgbouncer/${act}`, { method: 'POST' });
             showToast(`pgbouncer ${act} ok`, 'success');

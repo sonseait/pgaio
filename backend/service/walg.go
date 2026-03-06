@@ -158,13 +158,20 @@ func (w *WalG) TriggerBackup(ctx context.Context) (*model.BackupTriggerResponse,
 }
 
 // RestoreBackup initiates a restore. This is a DANGEROUS operation.
+// If req.TargetTime is set, performs Point-In-Time Recovery (PITR).
 func (w *WalG) RestoreBackup(ctx context.Context, req model.RestoreRequest) (*model.BackupTriggerResponse, error) {
 	if req.BackupName == "" {
 		return nil, fmt.Errorf("backupName is required")
 	}
 
+	isPITR := req.TargetTime != ""
+	label := req.BackupName
+	if isPITR {
+		label = fmt.Sprintf("%s (PITR → %s)", req.BackupName, req.TargetTime)
+	}
+
 	go func() {
-		log.Printf("[walg] ⚠️ RESTORE STARTED for backup: %s", req.BackupName)
+		log.Printf("[walg] ⚠️ RESTORE STARTED for: %s", label)
 
 		dataDir := w.dataDir
 
@@ -205,17 +212,22 @@ func (w *WalG) RestoreBackup(ctx context.Context, req model.RestoreRequest) (*mo
 			return
 		}
 
-		// Append restore_command to postgresql.auto.conf
+		// Build recovery config lines
 		autoConf := dataDir + "/postgresql.auto.conf"
-		restoreLine := "\nrestore_command = 'wal-g wal-fetch \"%f\" \"%p\"'\n"
+		recoveryLines := "\nrestore_command = 'wal-g wal-fetch \"%f\" \"%p\"'\n"
+		if isPITR {
+			recoveryLines += fmt.Sprintf("recovery_target_time = '%s'\n", req.TargetTime)
+			recoveryLines += "recovery_target_action = 'promote'\n"
+		}
+
 		f, err := os.OpenFile(autoConf, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Printf("[walg] failed to open postgresql.auto.conf: %v", err)
 			return
 		}
-		if _, err := f.WriteString(restoreLine); err != nil {
+		if _, err := f.WriteString(recoveryLines); err != nil {
 			f.Close()
-			log.Printf("[walg] failed to write restore_command: %v", err)
+			log.Printf("[walg] failed to write recovery config: %v", err)
 			return
 		}
 		f.Close()
@@ -229,11 +241,15 @@ func (w *WalG) RestoreBackup(ctx context.Context, req model.RestoreRequest) (*mo
 			log.Printf("[walg] pg_ctl start failed: %s %v", string(out), err)
 			return
 		}
-		log.Printf("[walg] ✅ RESTORE COMPLETED for backup: %s — PostgreSQL is starting", req.BackupName)
+		log.Printf("[walg] ✅ RESTORE COMPLETED for: %s — PostgreSQL is starting", label)
 	}()
 
+	msg := fmt.Sprintf("Restore started for %s. PostgreSQL will restart.", req.BackupName)
+	if isPITR {
+		msg = fmt.Sprintf("PITR restore started → %s. PostgreSQL will restart.", req.TargetTime)
+	}
 	return &model.BackupTriggerResponse{
-		Message: fmt.Sprintf("Restore started for %s. PostgreSQL will restart.", req.BackupName),
+		Message: msg,
 		Status:  "running",
 	}, nil
 }

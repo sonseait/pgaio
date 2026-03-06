@@ -72,8 +72,7 @@ func (h *DashboardHandler) StreamStats(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if err := wsjson.Write(ctx, conn, stats); err != nil {
-				log.Printf("[ws] write error: %v", err)
-				return
+				return // client disconnected
 			}
 		}
 	}

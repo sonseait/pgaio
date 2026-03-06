@@ -60,6 +60,3 @@ shell:
 
 psql:
 	docker compose exec pgaio psql -U postgres
-
-supervisorctl:
-	docker compose exec pgaio supervisorctl status

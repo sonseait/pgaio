@@ -3,18 +3,63 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
+	"time"
 
 	"pgaio/model"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type HistoryEntry struct {
+	Query    string    `json:"query"`
+	Time     time.Time `json:"time"`
+	Duration float64   `json:"duration"` // ms
+	RowCount int       `json:"rowCount"`
+	Error    string    `json:"error,omitempty"`
+}
+
 type SQLHandler struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	mu      sync.Mutex
+	history []HistoryEntry
 }
 
 func NewSQLHandler(pool *pgxpool.Pool) *SQLHandler {
 	return &SQLHandler{pool: pool}
+}
+
+func (h *SQLHandler) addHistory(query string, durMs float64, rowCount int, errMsg string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.history = append(h.history, HistoryEntry{
+		Query:    query,
+		Time:     time.Now(),
+		Duration: durMs,
+		RowCount: rowCount,
+		Error:    errMsg,
+	})
+	if len(h.history) > 100 {
+		h.history = h.history[len(h.history)-100:]
+	}
+}
+
+// GetHistory returns query execution history.
+func (h *SQLHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.history == nil {
+		h.history = []HistoryEntry{}
+	}
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: h.history})
+}
+
+// ClearHistory clears query history.
+func (h *SQLHandler) ClearHistory(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.history = []HistoryEntry{}
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: "history cleared"})
 }
 
 // ExecuteSQL runs an arbitrary SQL query and returns results.
@@ -31,8 +76,11 @@ func (h *SQLHandler) ExecuteSQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
 	rows, err := h.pool.Query(r.Context(), req.Query)
 	if err != nil {
+		durMs := float64(time.Since(start).Microseconds()) / 1000
+		h.addHistory(req.Query, durMs, 0, err.Error())
 		writeJSON(w, http.StatusOK, model.APIResponse{Success: false, Error: err.Error()})
 		return
 	}
@@ -70,6 +118,9 @@ func (h *SQLHandler) ExecuteSQL(w http.ResponseWriter, r *http.Request) {
 		Rows     []map[string]interface{} `json:"rows"`
 		RowCount int                      `json:"rowCount"`
 	}
+
+	durMs := float64(time.Since(start).Microseconds()) / 1000
+	h.addHistory(req.Query, durMs, len(results), "")
 
 	writeJSON(w, http.StatusOK, model.APIResponse{
 		Success: true,

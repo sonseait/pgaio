@@ -324,7 +324,7 @@ const Dashboard = {
     },
 
     async terminateQuery(pid) {
-        if (!confirm(`Terminate PID ${pid}?`)) return;
+        if (!await showConfirm('terminate process', `Terminate PID ${pid}?`, { danger: true, confirmText: 'terminate' })) return;
         try { await apiProtected(`/dashboard/terminate/${pid}`, { method: 'POST' }); showToast(`backend ${pid} terminated`, 'success'); }
         catch (e) { /* handled */ }
     },

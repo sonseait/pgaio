@@ -58,7 +58,7 @@ const ServerOverview = {
                     if (db.schemas && db.schemas.length > 0) {
                         db.schemas.forEach(schema => {
                             html += `<div style="padding:0">
-                                <div style="padding:4px 10px 4px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;background:var(--bg-1)">
+                                <div style="padding:4px 10px 4px 24px;display:flex;align-items:center;gap:6px;background:var(--bg-1)">
                                     <i data-lucide="folder" style="width:11px;height:11px;color:var(--text-2)"></i>
                                     <span class="mono-xs">${this.esc(schema.name)}</span>
                                     <span class="dim mono-xs">${schema.size}</span>

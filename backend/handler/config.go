@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
+	"os"
+	"os/exec"
 
 	"pgaio/model"
 
@@ -84,4 +87,19 @@ func (h *ConfigHandler) SetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: "configuration updated"})
+}
+
+// RestartPostgreSQL restarts the PostgreSQL server via pg_ctl.
+func (h *ConfigHandler) RestartPostgreSQL(w http.ResponseWriter, r *http.Request) {
+	// Start restart in background so response can be sent first
+	go func() {
+		cmd := exec.Command("pg_ctl", "restart", "-D", "/bitnami/postgresql/data", "-m", "fast", "-w")
+		cmd.Env = append(os.Environ(), "PGUSER=postgres")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("[restart] pg_ctl error: %v\nOutput: %s", err, out)
+		} else {
+			log.Printf("[restart] PostgreSQL restarted successfully")
+		}
+	}()
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: "PostgreSQL restart initiated"})
 }

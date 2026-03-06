@@ -21,13 +21,8 @@ services:
       - AWS_ENDPOINT=http://minio:9000
       - AWS_S3_FORCE_PATH_STYLE=true
       - AWS_REGION=us-east-1
-      # Backup schedule
-      - BACKUP_INTERVAL_HOURS=6
-      - BACKUP_RETAIN_COUNT=7
       # Backup encryption (optional — generate with: openssl rand -hex 32)
-      # - WALG_LIBSODIUM_KEY=
-    volumes:
-      - pgdata:/bitnami/postgresql
+      - WALG_LIBSODIUM_KEY=d82943af045a1205cbba1f2fed4530d3036b4cde48d863be01baf1e57037e59c
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -41,8 +36,6 @@ services:
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
-    volumes:
-      - minio-data:/data
     command: server /data --console-address ":9001"
 
   minio-init:
@@ -57,7 +50,3 @@ services:
       mc mb --ignore-existing myminio/pgaio-backups;
       echo 'Bucket created successfully';
       "
-
-volumes:
-  pgdata:
-  minio-data:

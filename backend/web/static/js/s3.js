@@ -105,7 +105,7 @@ const S3Browser = {
     },
 
     async deleteObj(key) {
-        if (!confirm(`Delete "${key}"?`)) return;
+        if (!await showConfirm('delete object', `Delete "${key}"?`, { danger: true, confirmText: 'delete' })) return;
         try {
             await apiProtected(`/s3/objects?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
             showToast('deleted', 'success');
