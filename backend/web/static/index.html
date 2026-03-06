@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PGAIO — PostgreSQL All-in-One</title>
+    <meta
+      name="description"
+      content="All-in-One PostgreSQL Management Dashboard"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-logo">
+        <i data-lucide="database" class="icon-lg"></i>
+        <div>
+          <span class="logo-text">PGAIO</span>
+          <span class="logo-sub">psql all-in-one</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#dashboard" data-page="dashboard" class="nav-link active">
+          <i data-lucide="activity"></i>
+          <span>dashboard</span>
+        </a>
+        <a href="#backups" data-page="backups" class="nav-link">
+          <i data-lucide="archive"></i>
+          <span>backups</span>
+        </a>
+        <a href="#s3" data-page="s3" class="nav-link">
+          <i data-lucide="folder"></i>
+          <span>s3 browser</span>
+        </a>
+        <a href="#logs" data-page="logs" class="nav-link">
+          <i data-lucide="terminal"></i>
+          <span>logs</span>
+        </a>
+        <a href="#config" data-page="config" class="nav-link">
+          <i data-lucide="settings"></i>
+          <span>config</span>
+        </a>
+        <a href="#server" data-page="server" class="nav-link">
+          <i data-lucide="server"></i>
+          <span>server</span>
+        </a>
+        <a href="#sql" data-page="sql" class="nav-link">
+          <i data-lucide="code"></i>
+          <span>sql editor</span>
+        </a>
+        <a href="#pgbouncer" data-page="pgbouncer" class="nav-link">
+          <i data-lucide="zap"></i>
+          <span>pgbouncer</span>
+        </a>
+        <a href="#auth" data-page="auth" class="nav-link">
+          <i data-lucide="shield"></i>
+          <span>totp auth</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span id="ws-indicator" class="ws-dot offline"></span>
+        <span id="ws-status" class="mono-xs">disconnected</span>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content">
+      <header id="header">
+        <div>
+          <h2 id="page-title">dashboard</h2>
+          <span id="page-subtitle" class="mono-xs dim"
+            >real-time monitoring</span
+          >
+        </div>
+        <div class="header-right">
+          <span id="last-update" class="mono-xs dim"></span>
+          <button id="btn-refresh" class="btn btn-sm" title="Refresh">
+            <i data-lucide="refresh-cw" class="icon-sm"></i>
+          </button>
+        </div>
+      </header>
+
+      <div id="page-content"></div>
+    </main>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="/js/app.js"></script>
+    <script src="/js/dashboard.js"></script>
+    <script src="/js/backup.js"></script>
+    <script src="/js/s3.js"></script>
+    <script src="/js/pgbouncer.js"></script>
+    <script src="/js/logs.js"></script>
+    <script src="/js/config.js"></script>
+    <script src="/js/server.js"></script>
+    <script src="/js/sql.js"></script>
+  </body>
+</html>
