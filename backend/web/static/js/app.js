@@ -27,17 +27,23 @@ async function api(path, options = {}) {
     }
 }
 
-// TOTP-protected API call — prompts for 6-digit code then sends with X-TOTP-Code header
+// Session-protected API call — uses stored session, prompts login if needed
 function apiProtected(path, options = {}) {
     return new Promise((resolve, reject) => {
-        showTOTPModal((code) => {
+        const tryRequest = (sid) => {
             const headers = {
                 'Content-Type': 'application/json',
-                'X-TOTP-Code': code,
+                'X-Session-ID': sid,
                 ...(options.headers || {}),
             };
             fetch(API_BASE + path, { ...options, headers })
                 .then(async res => {
+                    if (res.status === 401) {
+                        // Session expired or missing — prompt login
+                        sessionStorage.removeItem('pgaio_session');
+                        showLoginModal((newSid) => tryRequest(newSid), reject);
+                        return;
+                    }
                     if (!res.ok) {
                         const err = await res.json().catch(() => ({ error: res.statusText }));
                         const msg = err.error || res.statusText;
@@ -46,56 +52,85 @@ function apiProtected(path, options = {}) {
                     }
                     return res.json();
                 })
-                .then(resolve)
+                .then(data => { if (data) resolve(data); })
                 .catch(reject);
-        }, reject);
+        };
+
+        const sessionId = sessionStorage.getItem('pgaio_session');
+        if (sessionId) {
+            tryRequest(sessionId);
+        } else {
+            showLoginModal((sid) => tryRequest(sid), reject);
+        }
     });
 }
 
 // ========================
-// TOTP Modal
+// Login Modal (session-based)
 // ========================
-function showTOTPModal(onConfirm, onCancel) {
-    // Remove existing modal
-    const old = document.getElementById('totp-modal');
+function showLoginModal(onSuccess, onCancel) {
+    const old = document.getElementById('login-modal');
     if (old) old.remove();
 
     const modal = document.createElement('div');
-    modal.id = 'totp-modal';
+    modal.id = 'login-modal';
     modal.className = 'totp-overlay';
     modal.innerHTML = `
         <div class="totp-dialog">
             <div class="totp-title">authentication required</div>
-            <div class="totp-desc">enter 6-digit TOTP code from your authenticator app</div>
-            <input type="text" id="totp-input" class="totp-input" maxlength="6"
+            <div class="totp-desc">enter 6-digit code from your authenticator app</div>
+            <input type="text" id="login-otp-input" class="totp-input" maxlength="6"
                    pattern="[0-9]*" inputmode="numeric" autocomplete="one-time-code"
                    placeholder="000000" autofocus>
+            <div id="login-error" class="mono-xs red" style="margin-bottom:8px;min-height:14px"></div>
             <div class="totp-actions">
-                <button class="btn btn-sm" id="totp-cancel">cancel</button>
-                <button class="btn btn-sm btn-primary" id="totp-confirm">verify</button>
+                <button class="btn btn-sm" id="login-cancel">cancel</button>
+                <button class="btn btn-sm btn-primary" id="login-confirm">login</button>
             </div>
         </div>
     `;
     document.body.appendChild(modal);
 
-    const input = document.getElementById('totp-input');
+    const input = document.getElementById('login-otp-input');
     input.focus();
 
     const cleanup = () => modal.remove();
+    const errEl = document.getElementById('login-error');
 
-    const submit = () => {
+    const submit = async () => {
         const code = input.value.trim();
         if (code.length !== 6 || !/^\d+$/.test(code)) {
             input.style.borderColor = 'var(--red)';
+            errEl.textContent = 'enter 6 digits';
             input.focus();
             return;
         }
-        cleanup();
-        onConfirm(code);
+        try {
+            const res = await fetch(API_BASE + '/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                errEl.textContent = data.error || 'invalid code';
+                input.value = '';
+                input.style.borderColor = 'var(--red)';
+                input.focus();
+                return;
+            }
+            const sid = data.data.sessionId;
+            sessionStorage.setItem('pgaio_session', sid);
+            IdleTracker.reset();
+            cleanup();
+            onSuccess(sid);
+        } catch (e) {
+            errEl.textContent = 'connection error';
+        }
     };
 
-    document.getElementById('totp-confirm').addEventListener('click', submit);
-    document.getElementById('totp-cancel').addEventListener('click', () => {
+    document.getElementById('login-confirm').addEventListener('click', submit);
+    document.getElementById('login-cancel').addEventListener('click', () => {
         cleanup();
         if (onCancel) onCancel(new Error('cancelled'));
     });
@@ -103,11 +138,38 @@ function showTOTPModal(onConfirm, onCancel) {
         if (e.key === 'Enter') submit();
         if (e.key === 'Escape') { cleanup(); if (onCancel) onCancel(new Error('cancelled')); }
     });
-    // Auto-submit when 6 digits entered
     input.addEventListener('input', () => {
         if (input.value.trim().length === 6) submit();
     });
 }
+
+// ========================
+// Idle Tracker (15 min session timeout)
+// ========================
+const IdleTracker = {
+    _timer: null,
+    _timeout: 15 * 60 * 1000, // 15 minutes
+
+    start() {
+        ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(evt =>
+            document.addEventListener(evt, () => this.reset(), { passive: true })
+        );
+        this.reset();
+    },
+
+    reset() {
+        if (this._timer) clearTimeout(this._timer);
+        this._timer = setTimeout(() => this.expire(), this._timeout);
+    },
+
+    expire() {
+        const sid = sessionStorage.getItem('pgaio_session');
+        if (sid) {
+            sessionStorage.removeItem('pgaio_session');
+            showToast('session expired — please login again', 'info');
+        }
+    },
+};
 
 // ========================
 // Toast
@@ -322,6 +384,26 @@ const pages = {
     auth: {
         title: 'totp setup', sub: 'authenticator configuration',
         render: async (el) => {
+            // Check if already set up
+            try {
+                const status = await api('/auth/status');
+                if (status.data?.setup) {
+                    el.innerHTML = `
+                        <div class="totp-setup">
+                            <div class="card" style="padding:24px">
+                                <div class="card-title" style="margin-bottom:16px">TOTP authenticator</div>
+                                <p class="green mono-xs" style="margin-bottom:12px">✓ TOTP is configured and active</p>
+                                <p class="dim" style="font-size:10px">
+                                    Your authenticator app is linked. To reconfigure, delete the secret file
+                                    inside the container and restart.
+                                </p>
+                            </div>
+                        </div>
+                    `;
+                    return;
+                }
+            } catch(e) { /* continue to setup */ }
+
             el.innerHTML = '<div class="totp-setup"><div class="dim">loading...</div></div>';
             try {
                 const res = await api('/auth/setup');
@@ -331,8 +413,8 @@ const pages = {
                         <div class="card" style="padding:24px">
                             <div class="card-title" style="margin-bottom:16px">TOTP authenticator setup</div>
                             <p class="dim" style="font-size:11px;margin-bottom:16px">
-                                Scan the QR code below with Google Authenticator, Authy, or any TOTP app.
-                                Or manually enter the secret key.
+                                Scan the QR code below with Google Authenticator, Authy, or any TOTP app.<br>
+                                Then enter the 6-digit code to confirm and save.
                             </p>
                             <div class="qr-placeholder">
                                 <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(info.url)}" alt="QR" width="180" height="180">
@@ -342,19 +424,19 @@ const pages = {
                                 issuer: ${escHtml(info.issuer)} · account: ${escHtml(info.account)}
                             </p>
                             <div style="display:flex;gap:8px;justify-content:center;align-items:center">
-                                <input type="text" id="totp-test-input" class="totp-input" maxlength="6"
+                                <input type="text" id="setup-otp-input" class="totp-input" maxlength="6"
                                     pattern="[0-9]*" inputmode="numeric" placeholder="000000"
                                     style="width:160px;margin:0;font-size:16px">
-                                <button onclick="TOTPSetup.verify()" class="btn btn-sm btn-primary">
-                                    verify
+                                <button onclick="TOTPSetup.confirm()" class="btn btn-sm btn-primary">
+                                    confirm & save
                                 </button>
                             </div>
-                            <div id="totp-test-result" class="mono-xs" style="margin-top:8px"></div>
+                            <div id="setup-result" class="mono-xs" style="margin-top:8px"></div>
                         </div>
                     </div>
                 `;
             } catch (e) {
-                el.innerHTML = `<div class="dim">error loading TOTP setup: ${escHtml(e.message)}</div>`;
+                el.innerHTML = `<div class="dim">error: ${escHtml(e.message)}</div>`;
             }
         },
     },
@@ -383,30 +465,57 @@ function navigate() {
 }
 
 // ========================
-// Init
+// TOTP Setup (first-time only)
 // ========================
 const TOTPSetup = {
-    async verify() {
-        const input = document.getElementById('totp-test-input');
-        const result = document.getElementById('totp-test-result');
+    async confirm() {
+        const input = document.getElementById('setup-otp-input');
+        const result = document.getElementById('setup-result');
         if (!input || !result) return;
         const code = input.value.trim();
         if (code.length !== 6) { result.innerHTML = '<span class="red">enter 6 digits</span>'; return; }
         try {
-            await api('/auth/verify', {
+            const res = await fetch(API_BASE + '/auth/setup/confirm', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code }),
             });
-            result.innerHTML = '<span class="green">✓ valid — authenticator is configured correctly</span>';
+            const data = await res.json();
+            if (!res.ok) {
+                result.innerHTML = `<span class="red">✗ ${escHtml(data.error || 'invalid code')}</span>`;
+                input.value = '';
+                input.focus();
+                return;
+            }
+            // Save session from confirm
+            sessionStorage.setItem('pgaio_session', data.data.sessionId);
+            IdleTracker.reset();
+            result.innerHTML = '<span class="green">✓ saved! redirecting...</span>';
+            showToast('TOTP configured successfully', 'success');
+            setTimeout(() => { location.hash = '#dashboard'; navigate(); }, 1000);
         } catch (e) {
-            result.innerHTML = '<span class="red">✗ invalid code — check your authenticator app</span>';
+            result.innerHTML = '<span class="red">connection error</span>';
         }
     }
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+// ========================
+// Init
+// ========================
+document.addEventListener('DOMContentLoaded', async () => {
     lucide.createIcons();
+    IdleTracker.start();
+
+    // Check auth status
+    try {
+        const res = await api('/auth/status');
+        const { setup } = res.data || {};
+        if (!setup) {
+            // Force to setup page
+            location.hash = '#auth';
+        }
+    } catch (e) { /* continue */ }
+
     navigate();
     window.addEventListener('hashchange', navigate);
     const btn = document.getElementById('btn-refresh');

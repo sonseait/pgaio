@@ -152,13 +152,17 @@ const DatabaseIO = {
         const dataOnly = document.getElementById('export-data-only')?.checked ? 'true' : 'false';
         if (!db) { showToast('select a database', 'error'); return; }
 
-        showToast('preparing download...', 'info');
-        // Use TOTP-protected download via fetch
-        showTOTPModal(async (code) => {
+        const doExport = async (sid) => {
             try {
+                showToast('preparing download...', 'info');
                 const res = await fetch(`${API_BASE}/database/export?database=${encodeURIComponent(db)}&format=${format}&dataOnly=${dataOnly}`, {
-                    headers: { 'X-TOTP-Code': code },
+                    headers: { 'X-Session-ID': sid },
                 });
+                if (res.status === 401) {
+                    sessionStorage.removeItem('pgaio_session');
+                    showLoginModal((newSid) => doExport(newSid));
+                    return;
+                }
                 if (!res.ok) throw new Error('export failed: ' + res.statusText);
                 const blob = await res.blob();
                 const url = URL.createObjectURL(blob);
@@ -171,7 +175,11 @@ const DatabaseIO = {
             } catch (e) {
                 showToast('export failed: ' + e.message, 'error');
             }
-        });
+        };
+
+        const sid = sessionStorage.getItem('pgaio_session');
+        if (sid) { doExport(sid); }
+        else { showLoginModal((newSid) => doExport(newSid)); }
     },
 
     async _uploadFile(file) {
@@ -189,12 +197,11 @@ const DatabaseIO = {
         const statusEl = document.getElementById('import-status');
         statusEl.innerHTML = '<span class="mono-xs yellow">uploading...</span>';
 
-        showTOTPModal(async (code) => {
+        const doImport = async (sid) => {
             try {
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('database', db);
-                // Import options
                 const checkOpt = (id, key) => {
                     if (document.getElementById(id)?.checked) formData.append(key, 'true');
                 };
@@ -206,9 +213,14 @@ const DatabaseIO = {
 
                 const res = await fetch(`${API_BASE}/database/import`, {
                     method: 'POST',
-                    headers: { 'X-TOTP-Code': code },
+                    headers: { 'X-Session-ID': sid },
                     body: formData,
                 });
+                if (res.status === 401) {
+                    sessionStorage.removeItem('pgaio_session');
+                    showLoginModal((newSid) => doImport(newSid));
+                    return;
+                }
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
                     throw new Error(err.error || res.statusText);
@@ -220,8 +232,10 @@ const DatabaseIO = {
                 statusEl.innerHTML = `<span class="mono-xs red">✗ ${escHtml(e.message)}</span>`;
                 showToast('import failed: ' + e.message, 'error');
             }
-        }, () => {
-            statusEl.innerHTML = '';
-        });
+        };
+
+        const sid = sessionStorage.getItem('pgaio_session');
+        if (sid) { doImport(sid); }
+        else { showLoginModal((newSid) => doImport(newSid), () => { statusEl.innerHTML = ''; }); }
     },
 };

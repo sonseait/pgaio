@@ -76,15 +76,17 @@ func New(
 	return s
 }
 
-// protect wraps a handler with TOTP middleware.
+// protect wraps a handler with session middleware.
 func (s *Server) protect(h http.HandlerFunc) http.HandlerFunc {
-	return handler.TOTPMiddleware(s.totp, h)
+	return handler.SessionMiddleware(s.totp, h)
 }
 
 func (s *Server) routes() {
-	// Auth (no TOTP required)
+	// Auth (no session required)
+	s.mux.HandleFunc("GET /api/auth/status", s.auth.GetStatus)
 	s.mux.HandleFunc("GET /api/auth/setup", s.auth.GetSetup)
-	s.mux.HandleFunc("POST /api/auth/verify", s.auth.Verify)
+	s.mux.HandleFunc("POST /api/auth/setup/confirm", s.auth.ConfirmSetup)
+	s.mux.HandleFunc("POST /api/auth/login", s.auth.Login)
 
 	// Settings (GET = public, POST = TOTP)
 	s.mux.HandleFunc("GET /api/settings", s.settings.GetSettings)
@@ -189,7 +191,7 @@ func (s *Server) routes() {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-TOTP-Code")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Session-ID")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return

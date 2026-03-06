@@ -16,14 +16,35 @@ func NewAuthHandler(totp *service.TOTP) *AuthHandler {
 	return &AuthHandler{totp: totp}
 }
 
-// GetSetup returns the TOTP setup info (secret + otpauth URL for QR).
+// GetStatus returns whether TOTP is set up and if the current session is valid.
+func (h *AuthHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.Header.Get("X-Session-ID")
+	writeJSON(w, http.StatusOK, model.APIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"setup":   h.totp.IsSetup(),
+			"session": h.totp.CheckSession(sessionID),
+		},
+	})
+}
+
+// GetSetup generates a pending secret for first-time TOTP setup.
+// Returns 403 if TOTP is already configured.
 func (h *AuthHandler) GetSetup(w http.ResponseWriter, r *http.Request) {
-	info := h.totp.GetSetupInfo()
+	if h.totp.IsSetup() {
+		writeJSON(w, http.StatusForbidden, model.APIResponse{Error: "TOTP already configured"})
+		return
+	}
+	info, err := h.totp.GeneratePendingSecret()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: info})
 }
 
-// Verify validates a TOTP code (for testing the setup).
-func (h *AuthHandler) Verify(w http.ResponseWriter, r *http.Request) {
+// ConfirmSetup verifies the code against pending secret, saves to file, creates session.
+func (h *AuthHandler) ConfirmSetup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
 	}
@@ -31,24 +52,47 @@ func (h *AuthHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid request"})
 		return
 	}
-
-	if h.totp.Validate(req.Code) {
-		writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]string{"status": "valid"}})
-	} else {
-		writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: "invalid TOTP code"})
+	sessionID, err := h.totp.ConfirmSetup(req.Code)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: err.Error()})
+		return
 	}
+	writeJSON(w, http.StatusOK, model.APIResponse{
+		Success: true,
+		Data:    map[string]string{"sessionId": sessionID},
+	})
 }
 
-// TOTPMiddleware wraps an http.HandlerFunc and requires a valid TOTP code.
-func TOTPMiddleware(totp *service.TOTP, next http.HandlerFunc) http.HandlerFunc {
+// Login validates TOTP code and creates a new session.
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid request"})
+		return
+	}
+	sessionID, err := h.totp.Login(req.Code)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, model.APIResponse{
+		Success: true,
+		Data:    map[string]string{"sessionId": sessionID},
+	})
+}
+
+// SessionMiddleware wraps a handler and requires a valid session.
+func SessionMiddleware(totp *service.TOTP, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		code := r.Header.Get("X-TOTP-Code")
-		if code == "" {
-			writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: "TOTP code required (X-TOTP-Code header)"})
+		sessionID := r.Header.Get("X-Session-ID")
+		if sessionID == "" {
+			writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: "session required"})
 			return
 		}
-		if !totp.Validate(code) {
-			writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: "invalid TOTP code"})
+		if !totp.ValidateSession(sessionID) {
+			writeJSON(w, http.StatusUnauthorized, model.APIResponse{Error: "session expired"})
 			return
 		}
 		next(w, r)

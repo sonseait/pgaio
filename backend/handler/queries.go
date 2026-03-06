@@ -97,14 +97,16 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Detect parameterized queries ($1, $2...) from pg_stat_statements
-	// These can't be run with ANALYZE because they need actual parameter values
-	hasParams := regexp.MustCompile(`\$\d+`).MatchString(query)
+	// pgx treats $N as bind parameters, so replace with NULL for planning
+	paramRe := regexp.MustCompile(`\$\d+`)
+	hasParams := paramRe.MatchString(query)
 
 	var explainSQL string
 	mode := "analyzed"
 	if hasParams {
-		// Generic plan without ANALYZE — safe for parameterized queries
-		explainSQL = "EXPLAIN (COSTS, BUFFERS, FORMAT JSON) " + query
+		// Replace $1, $2... with NULL so pgx won't expect bind values
+		planQuery := paramRe.ReplaceAllString(query, "NULL")
+		explainSQL = "EXPLAIN (COSTS, BUFFERS, FORMAT JSON) " + planQuery
 		mode = "estimated"
 	} else {
 		explainSQL = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query

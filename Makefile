@@ -26,9 +26,17 @@ update:
 # Docker
 # ========================
 
+IMAGE ?= cr.0xh4ck3d.dev/c/pgaio18:latest
+
 docker:
 	docker build -t pgaio .
 
+image-build:
+	docker build -t $(IMAGE) .
+
+image-push: image-build
+	docker push $(IMAGE)
+	
 up:
 	docker compose up --build -d
 

@@ -23,9 +23,13 @@ func NewSettingsHandler(config *service.ConfigStore, scheduler interface {
 	return &SettingsHandler{config: config, scheduler: scheduler}
 }
 
-// GetSettings returns current app config.
+// GetSettings returns current app config (with sensitive fields masked).
 func (h *SettingsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	cfg := h.config.Get()
+	// Mask sensitive fields
+	if cfg.Alerts.Telegram.BotToken != "" {
+		cfg.Alerts.Telegram.BotToken = "****"
+	}
 	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: cfg})
 }
 
@@ -35,6 +39,11 @@ func (h *SettingsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request)
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid config: " + err.Error()})
 		return
+	}
+	// Preserve masked sensitive fields — don't overwrite real value with "****"
+	if cfg.Alerts.Telegram.BotToken == "****" {
+		existing := h.config.Get()
+		cfg.Alerts.Telegram.BotToken = existing.Alerts.Telegram.BotToken
 	}
 	if err := h.config.Update(cfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: err.Error()})
