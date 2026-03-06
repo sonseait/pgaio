@@ -5,21 +5,32 @@ import (
 	"net/http"
 
 	"pgaio/model"
+	"pgaio/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ExtensionsHandler struct {
-	pool *pgxpool.Pool
+	poolMgr *service.PoolManager
 }
 
-func NewExtensionsHandler(pool *pgxpool.Pool) *ExtensionsHandler {
-	return &ExtensionsHandler{pool: pool}
+func NewExtensionsHandler(poolMgr *service.PoolManager) *ExtensionsHandler {
+	return &ExtensionsHandler{poolMgr: poolMgr}
+}
+
+func (h *ExtensionsHandler) getPool(r *http.Request) *pgxpool.Pool {
+	db := r.URL.Query().Get("database")
+	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	if err != nil {
+		return h.poolMgr.DefaultPool()
+	}
+	return pool
 }
 
 // ListExtensions returns available and installed extensions.
 func (h *ExtensionsHandler) ListExtensions(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.pool.Query(r.Context(), `
+	pool := h.getPool(r)
+	rows, err := pool.Query(r.Context(), `
 		SELECT a.name, a.default_version, a.comment,
 		       e.extversion as installed_version
 		FROM pg_available_extensions a
@@ -56,13 +67,19 @@ func (h *ExtensionsHandler) ListExtensions(w http.ResponseWriter, r *http.Reques
 // InstallExtension creates an extension.
 func (h *ExtensionsHandler) InstallExtension(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		Database string `json:"database"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "name required"})
 		return
 	}
-	_, err := h.pool.Exec(r.Context(), "CREATE EXTENSION IF NOT EXISTS "+req.Name)
+	pool, err := h.poolMgr.GetPool(r.Context(), req.Database)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to connect to database: " + err.Error()})
+		return
+	}
+	_, err = pool.Exec(r.Context(), "CREATE EXTENSION IF NOT EXISTS "+req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: err.Error()})
 		return
@@ -73,13 +90,19 @@ func (h *ExtensionsHandler) InstallExtension(w http.ResponseWriter, r *http.Requ
 // UninstallExtension drops an extension.
 func (h *ExtensionsHandler) UninstallExtension(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		Database string `json:"database"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "name required"})
 		return
 	}
-	_, err := h.pool.Exec(r.Context(), "DROP EXTENSION IF EXISTS "+req.Name)
+	pool, err := h.poolMgr.GetPool(r.Context(), req.Database)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to connect to database: " + err.Error()})
+		return
+	}
+	_, err = pool.Exec(r.Context(), "DROP EXTENSION IF EXISTS "+req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: err.Error()})
 		return

@@ -3,8 +3,8 @@
 const Dashboard = {
     _data: [],
     _maxPoints: 40,
-    _prevCommit: null,
-    _prevRollback: null,
+    _prevCommits: {},
+    _prevRollbacks: {},
 
     render(container) {
         container.innerHTML = `
@@ -19,15 +19,13 @@ const Dashboard = {
                     <div class="chart-wrap" id="chart-conn"></div>
                 </div>
             </div>
-            <div class="grid grid-1-2 mb-12">
-                <div class="card">
-                    <div class="card-title">system</div>
-                    <div id="sys-resources"></div>
-                </div>
-                <div class="card">
-                    <div class="card-title">database</div>
-                    <div class="grid grid-3" id="db-overview"></div>
-                </div>
+            <div class="card mb-12">
+                <div class="card-title">system</div>
+                <div id="sys-resources"></div>
+            </div>
+            <div class="card mb-12">
+                <div class="card-title">databases</div>
+                <div id="db-overview"></div>
             </div>
             <div class="card">
                 <div class="flex-between mb-8">
@@ -43,8 +41,8 @@ const Dashboard = {
             </div>
         `;
         this._data = [];
-        this._prevCommit = null;
-        this._prevRollback = null;
+        this._prevCommits = {};
+        this._prevRollbacks = {};
         this.loadInitialData();
         lucide.createIcons();
     },
@@ -60,22 +58,25 @@ const Dashboard = {
 
     updateDashboard(data) {
         const now = new Date().toLocaleTimeString();
-        const db = data.database || {};
+        const dbs = data.databases || [];
         const conn = data.connections || {};
         const act = data.activity || {};
 
-        // Build time-series point
-        let cd = 0, rd = 0;
-        if (this._prevCommit !== null) {
-            cd = Math.max(0, (db.txCommit || 0) - this._prevCommit);
-            rd = Math.max(0, (db.txRollback || 0) - this._prevRollback);
-        }
-        this._prevCommit = db.txCommit || 0;
-        this._prevRollback = db.txRollback || 0;
+        // Aggregate TPS delta across all databases
+        let totalCd = 0, totalRd = 0;
+        dbs.forEach(db => {
+            const prev = this._prevCommits[db.name];
+            if (prev !== undefined) {
+                totalCd += Math.max(0, (db.txCommit || 0) - prev);
+                totalRd += Math.max(0, (db.txRollback || 0) - (this._prevRollbacks[db.name] || 0));
+            }
+            this._prevCommits[db.name] = db.txCommit || 0;
+            this._prevRollbacks[db.name] = db.txRollback || 0;
+        });
 
         this._data.push({
             time: now,
-            commits: cd, rollbacks: rd,
+            commits: totalCd, rollbacks: totalRd,
             active: act.activeQueries || 0,
             idle: act.idleConnections || 0,
             waiting: act.waitingQueries || 0,
@@ -86,24 +87,38 @@ const Dashboard = {
         this.renderTpsChart();
         this.renderConnChart();
         this.renderSystem(data.system);
-        this.renderDbOverview(db);
+        this.renderDbOverview(dbs);
         this.renderQueries(act);
     },
 
     renderStats(data) {
         const g = document.getElementById('stats-grid');
         if (!g) return;
-        const db = data.database || {};
+        const dbs = data.databases || [];
         const conn = data.connections || {};
         const act = data.activity || {};
-        const chr = db.cacheHitRatio || 0;
+
+        // Aggregate stats across all databases
+        let totalHit = 0, totalRead = 0, totalDeadlocks = 0, totalConflicts = 0, totalBackends = 0;
+        dbs.forEach(db => {
+            totalHit += db.blksHit || 0;
+            totalRead += db.blksRead || 0;
+            totalDeadlocks += db.deadlocks || 0;
+            totalConflicts += db.conflicts || 0;
+            totalBackends += db.numBackends || 0;
+        });
+        const chr = (totalHit + totalRead) > 0 ? (totalHit / (totalHit + totalRead) * 100) : 0;
         const chrColor = chr >= 99 ? 'green' : chr >= 95 ? 'yellow' : 'red';
+
+        // Total size
+        let totalSize = 0;
+        dbs.forEach(db => totalSize += db.sizeBytes || 0);
 
         g.innerHTML = `
             <div class="card">
                 <div class="mono-xs dim">cache hit</div>
                 <div class="stat-val ${chrColor}">${chr.toFixed(1)}%</div>
-                <div class="stat-label">${db.name || '-'} · ${db.size || '-'}</div>
+                <div class="stat-label">${dbs.length} database${dbs.length !== 1 ? 's' : ''} · ${formatBytes(totalSize)}</div>
             </div>
             <div class="card">
                 <div class="mono-xs dim">connections</div>
@@ -113,12 +128,12 @@ const Dashboard = {
             <div class="card">
                 <div class="mono-xs dim">active queries</div>
                 <div class="stat-val accent">${act.activeQueries || 0}</div>
-                <div class="stat-label">${act.waitingQueries || 0} waiting</div>
+                <div class="stat-label">${act.waitingQueries || 0} waiting · ${totalBackends} backends</div>
             </div>
             <div class="card">
                 <div class="mono-xs dim">deadlocks</div>
-                <div class="stat-val">${db.deadlocks || 0}</div>
-                <div class="stat-label">${db.conflicts || 0} conflicts</div>
+                <div class="stat-val">${totalDeadlocks}</div>
+                <div class="stat-label">${totalConflicts} conflicts</div>
             </div>
         `;
     },
@@ -241,50 +256,83 @@ const Dashboard = {
         if (!el || !sys) return;
 
         const bars = [
-            { label: 'cpu', val: sys.cpuUsage, color: sys.cpuUsage > 80 ? '#e55' : sys.cpuUsage > 50 ? '#ea3' : '#4c6' },
+            { label: 'cpu', val: sys.cpuUsage, color: sys.cpuUsage > 80 ? '#e55' : sys.cpuUsage > 50 ? '#ea3' : '#4c6',
+              detail: `${(sys.cpuUsage || 0).toFixed(1)}%` },
             { label: 'mem', val: sys.memUsage, color: sys.memUsage > 85 ? '#e55' : sys.memUsage > 60 ? '#ea3' : '#4af',
-              detail: `${formatBytes(sys.memUsed)} / ${formatBytes(sys.memTotal)}` },
+              detail: `${formatBytes(sys.memUsed)} / ${formatBytes(sys.memTotal)} (${(sys.memUsage || 0).toFixed(1)}%)` },
             { label: 'disk', val: sys.diskUsage, color: sys.diskUsage > 90 ? '#e55' : sys.diskUsage > 70 ? '#ea3' : '#a7f',
-              detail: `${formatBytes(sys.diskUsed)} / ${formatBytes(sys.diskTotal)}` },
+              detail: `${formatBytes(sys.diskUsed)} / ${formatBytes(sys.diskTotal)} (${(sys.diskUsage || 0).toFixed(1)}%)` },
         ];
 
-        el.innerHTML = bars.map(b => `
-            <div style="margin-bottom:8px">
-                <div class="flex-between" style="margin-bottom:2px">
-                    <span class="mono-xs dim">${b.label}</span>
-                    <span class="mono-xs">${(b.val || 0).toFixed(1)}%</span>
-                </div>
-                <div class="bar-track"><div class="bar-fill" style="width:${Math.min(b.val||0,100)}%;background:${b.color}"></div></div>
-                ${b.detail ? `<div class="mono-xs dim mt-4">${b.detail}</div>` : ''}
+        el.innerHTML = `
+            <div class="grid grid-3" style="gap:12px;margin-bottom:8px">
+                ${bars.map(b => `
+                    <div>
+                        <div class="flex-between" style="margin-bottom:2px">
+                            <span class="mono-xs dim">${b.label}</span>
+                            <span class="mono-xs">${b.detail}</span>
+                        </div>
+                        <div class="bar-track"><div class="bar-fill" style="width:${Math.min(b.val||0,100)}%;background:${b.color}"></div></div>
+                    </div>
+                `).join('')}
             </div>
-        `).join('') + `
-            <div class="flex-between mono-xs dim" style="margin-top:6px">
-                <span>load: ${(sys.loadAvg1||0).toFixed(2)} / ${(sys.loadAvg5||0).toFixed(2)} / ${(sys.loadAvg15||0).toFixed(2)}</span>
-                <span>up: ${sys.uptime || '-'}</span>
+            <div class="flex-between mono-xs dim">
+                <span>load avg: ${(sys.loadAvg1||0).toFixed(2)} / ${(sys.loadAvg5||0).toFixed(2)} / ${(sys.loadAvg15||0).toFixed(2)}</span>
+                <span>uptime: ${sys.uptime || '-'}</span>
             </div>
         `;
     },
 
-    renderDbOverview(db) {
+    renderDbOverview(dbs) {
         const el = document.getElementById('db-overview');
-        if (!el || !db) return;
-        const stats = [
-            ['commits', fmtNum(db.txCommit), '#4c6'],
-            ['rollbacks', fmtNum(db.txRollback), '#e55'],
-            ['returned', fmtNum(db.tupReturned), '#4af'],
-            ['inserted', fmtNum(db.tupInserted), '#a7f'],
-            ['updated', fmtNum(db.tupUpdated), '#ea3'],
-            ['deleted', fmtNum(db.tupDeleted), '#f93'],
-            ['tmp files', fmtNum(db.tempFiles), '#666'],
-            ['tmp bytes', formatBytes(db.tempBytes||0), '#666'],
-            ['blk read', fmtNum(db.blksRead), '#f93'],
-        ];
-        el.innerHTML = stats.map(([l, v, c]) => `
-            <div class="mini-stat">
-                <div class="mini-stat-label">${l}</div>
-                <div class="mini-stat-val" style="color:${c}">${v}</div>
-            </div>
-        `).join('');
+        if (!el) return;
+        if (!dbs || dbs.length === 0) {
+            el.innerHTML = '<div class="dim mono-xs">no databases</div>';
+            return;
+        }
+
+        const cards = dbs.map(db => {
+            const chr = db.cacheHitRatio || 0;
+            const chrColor = chr >= 99 ? '#4c6' : chr >= 95 ? '#ea3' : '#e55';
+            const stats = [
+                ['size', db.size || '-', '#a7f'],
+                ['backends', db.numBackends || 0, '#4af'],
+                ['cache hit', chr.toFixed(1) + '%', chrColor],
+                ['commits', fmtNum(db.txCommit), '#4c6'],
+                ['rollbacks', fmtNum(db.txRollback), '#e55'],
+                ['deadlocks', db.deadlocks || 0, db.deadlocks > 0 ? '#e55' : '#666'],
+                ['blks read', fmtNum(db.blksRead), '#f93'],
+                ['blks hit', fmtNum(db.blksHit), '#4af'],
+                ['returned', fmtNum(db.tupReturned), '#4af'],
+                ['fetched', fmtNum(db.tupFetched), '#a7f'],
+                ['inserted', fmtNum(db.tupInserted), '#a7f'],
+                ['updated', fmtNum(db.tupUpdated), '#ea3'],
+                ['deleted', fmtNum(db.tupDeleted), '#f93'],
+                ['conflicts', db.conflicts || 0, db.conflicts > 0 ? '#ea3' : '#666'],
+                ['tmp files', fmtNum(db.tempFiles), '#666'],
+                ['tmp bytes', formatBytes(db.tempBytes || 0), '#666'],
+                ['blk read ms', (db.blkReadTime || 0).toFixed(1), '#f93'],
+                ['blk write ms', (db.blkWriteTime || 0).toFixed(1), '#ea3'],
+            ];
+
+            return `<div style="background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px">
+                <div class="flex-between" style="margin-bottom:6px">
+                    <span style="font-weight:600;font-size:11px">${escHtml(db.name)}</span>
+                    <span class="mono-xs dim">${db.size || '-'}</span>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px">
+                    ${stats.map(([l, v, c]) => `
+                        <div class="mini-stat">
+                            <div class="mini-stat-label">${l}</div>
+                            <div class="mini-stat-val" style="color:${c}">${v}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>`;
+        }).join('');
+
+        const gridCols = dbs.length === 1 ? '1fr' : 'repeat(2, 1fr)';
+        el.innerHTML = `<div style="display:grid;grid-template-columns:${gridCols};gap:8px">${cards}</div>`;
     },
 
     renderQueries(act) {

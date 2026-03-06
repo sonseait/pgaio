@@ -4,7 +4,10 @@ const ExtensionManager = {
     async render(container) {
         container.innerHTML = `
             <div class="flex-between mb-8">
-                <span class="card-title" style="margin:0">extensions</span>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <span class="card-title" style="margin:0">extensions</span>
+                    <div id="ext-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
+                </div>
                 <div class="flex gap-4">
                     <input type="text" id="ext-search" placeholder="search..."
                         style="background:var(--bg-2);border:1px solid var(--border);color:var(--text-1);
@@ -22,12 +25,13 @@ const ExtensionManager = {
         `;
         document.getElementById('ext-search').addEventListener('input', () => this.renderList());
         document.getElementById('ext-filter').addEventListener('change', () => this.renderList());
+        await DbSelector.renderInto(document.getElementById('ext-db-sel'), () => this.load());
         await this.load();
     },
 
     async load() {
         try {
-            const res = await api('/extensions');
+            const res = await api('/extensions' + DbSelector.getParam());
             this._data = res.data || [];
             this.renderList();
         } catch (e) { /* handled */ }
@@ -70,7 +74,7 @@ const ExtensionManager = {
 
     async install(name) {
         try {
-            await apiProtected('/extensions/install', { method: 'POST', body: JSON.stringify({ name }) });
+            await apiProtected('/extensions/install', { method: 'POST', body: JSON.stringify({ name, database: DbSelector.getSelected() }) });
             showToast(name + ' installed', 'success');
             await this.load();
         } catch (e) { /* handled */ }
@@ -79,7 +83,7 @@ const ExtensionManager = {
     async uninstall(name) {
         if (!await showConfirm('uninstall extension', `Uninstall ${name}?`, { danger: true, confirmText: 'uninstall' })) return;
         try {
-            await apiProtected('/extensions/uninstall', { method: 'POST', body: JSON.stringify({ name }) });
+            await apiProtected('/extensions/uninstall', { method: 'POST', body: JSON.stringify({ name, database: DbSelector.getSelected() }) });
             showToast(name + ' removed', 'success');
             await this.load();
         } catch (e) { /* handled */ }

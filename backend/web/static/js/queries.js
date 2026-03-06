@@ -4,7 +4,10 @@ const SlowQueries = {
     async render(container) {
         container.innerHTML = `
             <div class="flex-between mb-8">
-                <span class="card-title" style="margin:0">slow queries</span>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <span class="card-title" style="margin:0">slow queries</span>
+                    <div id="queries-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
+                </div>
                 <div style="display:flex;gap:6px">
                     <button onclick="SlowQueries.resetStats()" class="btn btn-sm btn-danger" title="Reset statistics">
                         <i data-lucide="trash-2" class="icon-sm"></i> reset
@@ -15,12 +18,13 @@ const SlowQueries = {
             <div id="queries-content"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
         `;
         lucide.createIcons();
+        await DbSelector.renderInto(document.getElementById('queries-db-sel'), () => this.load());
         await this.load();
     },
 
     async load() {
         try {
-            const res = await api('/queries/slow');
+            const res = await api('/queries/slow' + DbSelector.getParam());
             const d = res.data;
             const el = document.getElementById('queries-content');
             if (!el) return;
@@ -37,7 +41,7 @@ const SlowQueries = {
             }
 
             el.innerHTML = `<div class="mono-xs dim mb-8">${queries.length} queries</div>
-                <div class="card" style="padding:0;overflow-x:auto;height:calc(100vh - 137px);overflow-y:auto">
+                <div class="card" style="padding:0;overflow-x:auto;height:calc(100vh - 138px);overflow-y:auto">
                 <table class="data-table" style="table-layout:fixed;width:100%">
                     <thead><tr>
                         <th>query</th>
@@ -108,7 +112,7 @@ const SlowQueries = {
         try {
             const res = await apiProtected('/queries/explain', {
                 method: 'POST',
-                body: JSON.stringify({ query: q.query })
+                body: JSON.stringify({ query: q.query, database: DbSelector.getSelected() })
             });
             const { mode, plan } = res.data || {};
             const resultEl = document.getElementById('explain-result');
@@ -130,7 +134,7 @@ const SlowQueries = {
     async resetStats() {
         if (!await showConfirm('reset statistics', 'Reset pg_stat_statements? This clears all query statistics.', { danger: true, confirmText: 'reset' })) return;
         try {
-            await apiProtected('/queries/reset', { method: 'POST' });
+            await apiProtected('/queries/reset' + DbSelector.getParam(), { method: 'POST' });
             showToast('statistics reset', 'success');
             await this.load();
         } catch (e) { /* handled */ }

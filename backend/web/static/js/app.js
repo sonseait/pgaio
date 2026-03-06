@@ -267,6 +267,46 @@ function escHtml(s) {
     if (!s) return '';
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+// ========================
+// Database Selector
+// ========================
+const DbSelector = {
+    _dbs: null,
+
+    async load() {
+        if (this._dbs) return this._dbs;
+        try {
+            const res = await api('/database/list');
+            this._dbs = res.data || [];
+        } catch { this._dbs = []; }
+        return this._dbs;
+    },
+
+    getSelected() { return sessionStorage.getItem('pgaio_selected_db') || ''; },
+    setSelected(db) { sessionStorage.setItem('pgaio_selected_db', db); },
+
+    /** Returns "?database=name" or "" if default */
+    getParam() {
+        const db = this.getSelected();
+        return db ? `?database=${encodeURIComponent(db)}` : '';
+    },
+
+    /** Render a select dropdown into container. onChange is called with db name. */
+    async renderInto(container, onChange) {
+        const dbs = await this.load();
+        const sel = this.getSelected();
+        container.innerHTML = `
+            <select id="db-selector" class="db-select" title="select database">
+                <option value="">default database</option>
+                ${dbs.map(d => `<option value="${escHtml(d)}" ${d === sel ? 'selected' : ''}>${escHtml(d)}</option>`).join('')}
+            </select>
+        `;
+        container.querySelector('#db-selector').addEventListener('change', (e) => {
+            this.setSelected(e.target.value);
+            if (onChange) onChange(e.target.value);
+        });
+    },
+};
 
 // ========================
 // WebSocket
@@ -357,10 +397,7 @@ const pages = {
         title: 'slow queries', sub: 'pg_stat_statements analysis',
         render: (el) => { if (typeof SlowQueries !== 'undefined') SlowQueries.render(el); },
     },
-    tables: {
-        title: 'table sizes', sub: 'storage breakdown',
-        render: (el) => { if (typeof TableBrowser !== 'undefined') TableBrowser.render(el); },
-    },
+
     vacuum: {
         title: 'vacuum monitor', sub: 'dead tuples & maintenance',
         render: (el) => { if (typeof VacuumMonitor !== 'undefined') VacuumMonitor.render(el); },

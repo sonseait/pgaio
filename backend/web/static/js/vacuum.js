@@ -8,6 +8,7 @@ const VacuumMonitor = {
             <div class="flex-between mb-8">
                 <div style="display:flex;gap:8px;align-items:center">
                     <span class="card-title" style="margin:0">vacuum & bloat</span>
+                    <div id="vacuum-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
                     <div style="display:flex;gap:2px">
                         <button onclick="VacuumMonitor.switchTab('vacuum')" class="btn btn-sm" id="tab-vacuum" style="font-size:9px">vacuum stats</button>
                         <button onclick="VacuumMonitor.switchTab('bloat')" class="btn btn-sm" id="tab-bloat" style="font-size:9px">bloat analysis</button>
@@ -18,6 +19,7 @@ const VacuumMonitor = {
             <div id="vacuum-content"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
         `;
         lucide.createIcons();
+        await DbSelector.renderInto(document.getElementById('vacuum-db-sel'), () => this.load());
         await this.load();
     },
 
@@ -35,7 +37,7 @@ const VacuumMonitor = {
 
     async loadVacuum() {
         try {
-            const res = await api('/vacuum/stats');
+            const res = await api('/vacuum/stats' + DbSelector.getParam());
             const stats = res.data || [];
             const el = document.getElementById('vacuum-content');
             if (!el) return;
@@ -46,7 +48,7 @@ const VacuumMonitor = {
             }
 
             el.innerHTML = `<div class="mono-xs dim mb-8">${stats.length} tables</div>
-                <div class="card" style="padding:0;overflow-x:auto;height:calc(100vh - 137px);overflow-y:auto">
+                <div class="card" style="padding:0;overflow-x:auto;height:calc(100vh - 138px);overflow-y:auto">
                 <table class="data-table" style="table-layout:fixed;width:100%">
                     <thead><tr>
                         <th>table</th>
@@ -81,7 +83,7 @@ const VacuumMonitor = {
 
     async loadBloat() {
         try {
-            const res = await api('/vacuum/bloat');
+            const res = await api('/vacuum/bloat' + DbSelector.getParam());
             const stats = res.data || [];
             const el = document.getElementById('vacuum-content');
             if (!el) return;
@@ -92,7 +94,7 @@ const VacuumMonitor = {
             }
 
             el.innerHTML = `<div class="mono-xs dim mb-8">${stats.length} tables with dead tuples</div>
-                <div class="card" style="padding:0;overflow-x:auto;height:calc(100vh - 137px);overflow-y:auto">
+                <div class="card" style="padding:0;overflow-x:auto;height:calc(100vh - 138px);overflow-y:auto">
                 <table class="data-table" style="table-layout:fixed;width:100%">
                     <thead><tr>
                         <th>table</th>
@@ -131,7 +133,7 @@ const VacuumMonitor = {
         try {
             await apiProtected('/vacuum/trigger', {
                 method: 'POST',
-                body: JSON.stringify({ schema, table, full })
+                body: JSON.stringify({ schema, table, full, database: DbSelector.getSelected() })
             });
             showToast(`${cmd} started on ${tableName}`, 'success');
             setTimeout(() => this.load(), 3000);

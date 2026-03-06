@@ -93,11 +93,11 @@ func (s *Scheduler) Restart() {
 }
 
 // Status returns scheduler status info.
-func (s *Scheduler) Status() map[string]interface{} {
+func (s *Scheduler) Status() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg := s.config.GetBackup()
-	status := map[string]interface{}{
+	status := map[string]any{
 		"enabled":       cfg.Enabled,
 		"intervalHours": cfg.IntervalHours,
 		"retainCount":   cfg.RetainCount,

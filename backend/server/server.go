@@ -16,18 +16,18 @@ import (
 type Server struct {
 	mux *http.ServeMux
 
-	dashboard  *handler.DashboardHandler
-	backup     *handler.BackupHandler
-	s3         *handler.S3Handler
-	pgbouncer  *handler.PgBouncerHandler
-	logs       *handler.LogHandler
-	config     *handler.ConfigHandler
-	overview   *handler.ServerOverviewHandler
-	sql        *handler.SQLHandler
-	auth       *handler.AuthHandler
-	settings   *handler.SettingsHandler
-	queries    *handler.QueriesHandler
-	tables     *handler.TablesHandler
+	dashboard *handler.DashboardHandler
+	backup    *handler.BackupHandler
+	s3        *handler.S3Handler
+	pgbouncer *handler.PgBouncerHandler
+	logs      *handler.LogHandler
+	config    *handler.ConfigHandler
+	overview  *handler.ServerOverviewHandler
+	sql       *handler.SQLHandler
+	auth      *handler.AuthHandler
+	settings  *handler.SettingsHandler
+	queries   *handler.QueriesHandler
+
 	vacuum     *handler.VacuumHandler
 	locks      *handler.LocksHandler
 	indexes    *handler.IndexesHandler
@@ -45,29 +45,30 @@ func New(
 	pgbouncer *service.PgBouncer,
 	logPath string,
 	pool *pgxpool.Pool,
+	poolMgr *service.PoolManager,
 	totpSvc *service.TOTP,
 	configStore *service.ConfigStore,
 	scheduler *service.Scheduler,
 	alerter *service.Alerter,
 ) *Server {
 	s := &Server{
-		mux:        http.NewServeMux(),
-		dashboard:  handler.NewDashboardHandler(monitor),
-		backup:     handler.NewBackupHandler(walg),
-		s3:         handler.NewS3Handler(s3Client),
-		pgbouncer:  handler.NewPgBouncerHandler(pgbouncer),
-		logs:       handler.NewLogHandler(logPath),
-		config:     handler.NewConfigHandler(pool),
-		overview:   handler.NewServerOverviewHandler(pool),
-		sql:        handler.NewSQLHandler(pool),
-		auth:       handler.NewAuthHandler(totpSvc),
-		settings:   handler.NewSettingsHandler(configStore, scheduler),
-		queries:    handler.NewQueriesHandler(pool),
-		tables:     handler.NewTablesHandler(pool),
-		vacuum:     handler.NewVacuumHandler(pool),
+		mux:       http.NewServeMux(),
+		dashboard: handler.NewDashboardHandler(monitor),
+		backup:    handler.NewBackupHandler(walg),
+		s3:        handler.NewS3Handler(s3Client),
+		pgbouncer: handler.NewPgBouncerHandler(pgbouncer),
+		logs:      handler.NewLogHandler(logPath),
+		config:    handler.NewConfigHandler(pool),
+		overview:  handler.NewServerOverviewHandler(poolMgr),
+		sql:       handler.NewSQLHandler(poolMgr),
+		auth:      handler.NewAuthHandler(totpSvc),
+		settings:  handler.NewSettingsHandler(configStore, scheduler),
+		queries:   handler.NewQueriesHandler(poolMgr),
+
+		vacuum:     handler.NewVacuumHandler(poolMgr),
 		locks:      handler.NewLocksHandler(pool),
-		indexes:    handler.NewIndexesHandler(pool),
-		extensions: handler.NewExtensionsHandler(pool),
+		indexes:    handler.NewIndexesHandler(poolMgr),
+		extensions: handler.NewExtensionsHandler(poolMgr),
 		alerts:     handler.NewAlertsHandler(alerter),
 		database:   handler.NewDatabaseHandler(pool),
 		totp:       totpSvc,
@@ -138,9 +139,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/queries/slow", s.queries.GetSlowQueries)
 	s.mux.HandleFunc("POST /api/queries/explain", s.protect(s.queries.ExplainQuery))
 	s.mux.HandleFunc("POST /api/queries/reset", s.protect(s.queries.ResetStats))
-
-	// Table Sizes
-	s.mux.HandleFunc("GET /api/tables/sizes", s.tables.GetTableSizes)
 
 	// Vacuum + Bloat
 	s.mux.HandleFunc("GET /api/vacuum/stats", s.vacuum.GetVacuumStats)

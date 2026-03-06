@@ -8,21 +8,32 @@ import (
 	"net/http"
 
 	"pgaio/model"
+	"pgaio/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type VacuumHandler struct {
-	pool *pgxpool.Pool
+	poolMgr *service.PoolManager
 }
 
-func NewVacuumHandler(pool *pgxpool.Pool) *VacuumHandler {
-	return &VacuumHandler{pool: pool}
+func NewVacuumHandler(poolMgr *service.PoolManager) *VacuumHandler {
+	return &VacuumHandler{poolMgr: poolMgr}
+}
+
+func (h *VacuumHandler) getPool(r *http.Request) *pgxpool.Pool {
+	db := r.URL.Query().Get("database")
+	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	if err != nil {
+		return h.poolMgr.DefaultPool()
+	}
+	return pool
 }
 
 // GetVacuumStats returns vacuum stats for all user tables.
 func (h *VacuumHandler) GetVacuumStats(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.pool.Query(r.Context(), `
+	pool := h.getPool(r)
+	rows, err := pool.Query(r.Context(), `
 		SELECT schemaname, relname, n_live_tup, n_dead_tup,
 		       CASE WHEN n_live_tup > 0 THEN round(n_dead_tup::numeric / n_live_tup * 100, 1) ELSE 0 END as dead_pct,
 		       last_vacuum, last_autovacuum, last_analyze, last_autoanalyze,
@@ -37,17 +48,17 @@ func (h *VacuumHandler) GetVacuumStats(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type VacuumStat struct {
-		Schema          string      `json:"schema"`
-		Table           string      `json:"table"`
-		LiveTuples      int64       `json:"liveTuples"`
-		DeadTuples      int64       `json:"deadTuples"`
-		DeadPct         float64     `json:"deadPct"`
-		LastVacuum      interface{} `json:"lastVacuum"`
-		LastAutovacuum  interface{} `json:"lastAutovacuum"`
-		LastAnalyze     interface{} `json:"lastAnalyze"`
-		LastAutoanalyze interface{} `json:"lastAutoanalyze"`
-		VacuumCount     int64       `json:"vacuumCount"`
-		AutovacuumCount int64       `json:"autovacuumCount"`
+		Schema          string  `json:"schema"`
+		Table           string  `json:"table"`
+		LiveTuples      int64   `json:"liveTuples"`
+		DeadTuples      int64   `json:"deadTuples"`
+		DeadPct         float64 `json:"deadPct"`
+		LastVacuum      any     `json:"lastVacuum"`
+		LastAutovacuum  any     `json:"lastAutovacuum"`
+		LastAnalyze     any     `json:"lastAnalyze"`
+		LastAutoanalyze any     `json:"lastAutoanalyze"`
+		VacuumCount     int64   `json:"vacuumCount"`
+		AutovacuumCount int64   `json:"autovacuumCount"`
 	}
 
 	var stats []VacuumStat
@@ -67,9 +78,10 @@ func (h *VacuumHandler) GetVacuumStats(w http.ResponseWriter, r *http.Request) {
 // TriggerVacuum runs VACUUM ANALYZE on a specific table.
 func (h *VacuumHandler) TriggerVacuum(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Schema string `json:"schema"`
-		Table  string `json:"table"`
-		Full   bool   `json:"full"`
+		Schema   string `json:"schema"`
+		Table    string `json:"table"`
+		Full     bool   `json:"full"`
+		Database string `json:"database"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid request"})
@@ -83,6 +95,12 @@ func (h *VacuumHandler) TriggerVacuum(w http.ResponseWriter, r *http.Request) {
 		req.Schema = "public"
 	}
 
+	pool, err := h.poolMgr.GetPool(context.Background(), req.Database)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to connect to database: " + err.Error()})
+		return
+	}
+
 	tableName := fmt.Sprintf("%q.%q", req.Schema, req.Table)
 	vacuumCmd := "VACUUM ANALYZE"
 	if req.Full {
@@ -92,7 +110,7 @@ func (h *VacuumHandler) TriggerVacuum(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		log.Printf("[vacuum] starting %s on %s...", vacuumCmd, tableName)
 		sql := fmt.Sprintf("%s %s", vacuumCmd, tableName)
-		_, err := h.pool.Exec(context.Background(), sql)
+		_, err := pool.Exec(context.Background(), sql)
 		if err != nil {
 			log.Printf("[vacuum] %s on %s failed: %v", vacuumCmd, tableName, err)
 		} else {
@@ -111,7 +129,8 @@ func (h *VacuumHandler) TriggerVacuum(w http.ResponseWriter, r *http.Request) {
 
 // GetBloatStats returns estimated table and index bloat.
 func (h *VacuumHandler) GetBloatStats(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.pool.Query(r.Context(), `
+	pool := h.getPool(r)
+	rows, err := pool.Query(r.Context(), `
 		SELECT
 			schemaname, tablename,
 			pg_size_pretty(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename))) as total_size,

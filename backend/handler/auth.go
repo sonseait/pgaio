@@ -21,7 +21,7 @@ func (h *AuthHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.Header.Get("X-Session-ID")
 	writeJSON(w, http.StatusOK, model.APIResponse{
 		Success: true,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"setup":   h.totp.IsSetup(),
 			"session": h.totp.CheckSession(sessionID),
 		},

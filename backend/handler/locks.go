@@ -67,7 +67,7 @@ func (h *LocksHandler) GetLocks(w http.ResponseWriter, r *http.Request) {
 	var locks []LockInfo
 	for rows.Next() {
 		var l LockInfo
-		var dur interface{}
+		var dur any
 		if err := rows.Scan(&l.BlockedPID, &l.BlockedUser, &l.BlockedQuery,
 			&l.BlockingPID, &l.BlockingUser, &l.BlockingQuery,
 			&l.WaitEventType, &l.BlockedState, &dur); err != nil {

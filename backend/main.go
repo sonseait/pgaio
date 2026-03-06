@@ -62,6 +62,10 @@ func main() {
 	defer pool.Close()
 	log.Println("✅ Connected to PostgreSQL")
 
+	// Pool manager for multi-database support
+	poolMgr := service.NewPoolManager(pool)
+	defer poolMgr.Close()
+
 	// Services
 	monitor := service.NewMonitor(pool)
 	walg := service.NewWalG(getEnv("PGDATA", "/bitnami/postgresql/data"))
@@ -112,7 +116,7 @@ func main() {
 	alerter := service.NewAlerter(configStore, monitor, walg)
 
 	// HTTP Server
-	srv := server.New(monitor, walg, s3Client, pgbouncer, logPath, pool, totpSvc, configStore, scheduler, alerter)
+	srv := server.New(monitor, walg, s3Client, pgbouncer, logPath, pool, poolMgr, totpSvc, configStore, scheduler, alerter)
 	addr := ":" + getEnv("PGAIO_PORT", "8080")
 	httpServer := &http.Server{
 		Addr:         addr,

@@ -4,24 +4,35 @@ import (
 	"net/http"
 
 	"pgaio/model"
+	"pgaio/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type IndexesHandler struct {
-	pool *pgxpool.Pool
+	poolMgr *service.PoolManager
 }
 
-func NewIndexesHandler(pool *pgxpool.Pool) *IndexesHandler {
-	return &IndexesHandler{pool: pool}
+func NewIndexesHandler(poolMgr *service.PoolManager) *IndexesHandler {
+	return &IndexesHandler{poolMgr: poolMgr}
+}
+
+func (h *IndexesHandler) getPool(r *http.Request) *pgxpool.Pool {
+	db := r.URL.Query().Get("database")
+	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	if err != nil {
+		return h.poolMgr.DefaultPool()
+	}
+	return pool
 }
 
 // GetIndexAdvice returns index analysis: missing, unused, and duplicate indexes.
 func (h *IndexesHandler) GetIndexAdvice(w http.ResponseWriter, r *http.Request) {
-	result := map[string]interface{}{}
+	pool := h.getPool(r)
+	result := map[string]any{}
 
 	// Missing indexes (high seq_scan vs idx_scan)
-	missingRows, err := h.pool.Query(r.Context(), `
+	missingRows, err := pool.Query(r.Context(), `
 		SELECT schemaname, relname, seq_scan, idx_scan,
 		       seq_scan - COALESCE(idx_scan, 0) as diff,
 		       pg_size_pretty(pg_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname))) as size
@@ -50,7 +61,7 @@ func (h *IndexesHandler) GetIndexAdvice(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Unused indexes
-	unusedRows, err := h.pool.Query(r.Context(), `
+	unusedRows, err := pool.Query(r.Context(), `
 		SELECT schemaname, relname, indexrelname, idx_scan,
 		       pg_size_pretty(pg_relation_size(indexrelid)) as size
 		FROM pg_stat_user_indexes
@@ -78,7 +89,7 @@ func (h *IndexesHandler) GetIndexAdvice(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Duplicate indexes
-	dupRows, err := h.pool.Query(r.Context(), `
+	dupRows, err := pool.Query(r.Context(), `
 		SELECT array_agg(indexname)::text as indexes, tablename, indexdef
 		FROM pg_indexes
 		WHERE schemaname NOT IN ('pg_catalog','information_schema')

@@ -6,7 +6,10 @@ const IndexAdvisor = {
     async render(container) {
         container.innerHTML = `
             <div class="flex-between mb-8">
-                <span class="card-title" style="margin:0">index advisor</span>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <span class="card-title" style="margin:0">index advisor</span>
+                    <div id="indexes-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
+                </div>
                 <div class="flex gap-4">
                     <button onclick="IndexAdvisor.switchTab('missing')" class="btn btn-sm" id="tab-missing">missing</button>
                     <button onclick="IndexAdvisor.switchTab('unused')" class="btn btn-sm" id="tab-unused">unused</button>
@@ -16,6 +19,7 @@ const IndexAdvisor = {
             <div id="indexes-content"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
         `;
         lucide.createIcons();
+        await DbSelector.renderInto(document.getElementById('indexes-db-sel'), () => this.load());
         await this.load();
     },
 
@@ -29,7 +33,7 @@ const IndexAdvisor = {
 
     async load() {
         try {
-            const res = await api('/indexes/advice');
+            const res = await api('/indexes/advice' + DbSelector.getParam());
             this._data = res.data || {};
             this.switchTab(this._tab);
         } catch (e) { /* handled */ }

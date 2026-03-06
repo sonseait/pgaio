@@ -7,33 +7,45 @@ import (
 	"strings"
 
 	"pgaio/model"
+	"pgaio/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type QueriesHandler struct {
-	pool *pgxpool.Pool
+	poolMgr *service.PoolManager
 }
 
-func NewQueriesHandler(pool *pgxpool.Pool) *QueriesHandler {
-	return &QueriesHandler{pool: pool}
+func NewQueriesHandler(poolMgr *service.PoolManager) *QueriesHandler {
+	return &QueriesHandler{poolMgr: poolMgr}
+}
+
+func (h *QueriesHandler) getPool(r *http.Request) *pgxpool.Pool {
+	db := r.URL.Query().Get("database")
+	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	if err != nil {
+		return h.poolMgr.DefaultPool()
+	}
+	return pool
 }
 
 // GetSlowQueries returns top slow queries from pg_stat_statements.
 func (h *QueriesHandler) GetSlowQueries(w http.ResponseWriter, r *http.Request) {
+	pool := h.getPool(r)
+
 	// Check if pg_stat_statements is available
 	var exists bool
-	h.pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements')`).Scan(&exists)
+	pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements')`).Scan(&exists)
 	if !exists {
-		writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]interface{}{
+		writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]any{
 			"available": false,
 			"message":   "pg_stat_statements extension not installed. Install via Extensions page.",
-			"queries":   []interface{}{},
+			"queries":   []any{},
 		}})
 		return
 	}
 
-	rows, err := h.pool.Query(r.Context(), `
+	rows, err := pool.Query(r.Context(), `
 		SELECT query, calls, round(mean_exec_time::numeric, 2) as mean_ms,
 		       round(total_exec_time::numeric, 2) as total_ms, rows,
 		       shared_blks_hit, shared_blks_read
@@ -66,7 +78,7 @@ func (h *QueriesHandler) GetSlowQueries(w http.ResponseWriter, r *http.Request) 
 		queries = append(queries, q)
 	}
 
-	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]interface{}{
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]any{
 		"available": true,
 		"queries":   queries,
 	}})
@@ -76,7 +88,8 @@ func (h *QueriesHandler) GetSlowQueries(w http.ResponseWriter, r *http.Request) 
 // For parameterized queries ($1, $2...), uses EXPLAIN without ANALYZE.
 func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Query string `json:"query"`
+		Query    string `json:"query"`
+		Database string `json:"database"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid request"})
@@ -93,6 +106,12 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 	upper := strings.ToUpper(query)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "only SELECT/WITH queries can be explained"})
+		return
+	}
+
+	pool, err := h.poolMgr.GetPool(r.Context(), req.Database)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to connect to database: " + err.Error()})
 		return
 	}
 
@@ -113,16 +132,16 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var planJSON []byte
-	err := h.pool.QueryRow(r.Context(), explainSQL).Scan(&planJSON)
+	err = pool.QueryRow(r.Context(), explainSQL).Scan(&planJSON)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "explain failed: " + err.Error()})
 		return
 	}
 
-	var plan interface{}
+	var plan any
 	json.Unmarshal(planJSON, &plan)
 
-	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]interface{}{
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]any{
 		"mode": mode,
 		"plan": plan,
 	}})
@@ -130,7 +149,8 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 
 // ResetStats resets pg_stat_statements statistics.
 func (h *QueriesHandler) ResetStats(w http.ResponseWriter, r *http.Request) {
-	_, err := h.pool.Exec(r.Context(), "SELECT pg_stat_statements_reset()")
+	pool := h.getPool(r)
+	_, err := pool.Exec(r.Context(), "SELECT pg_stat_statements_reset()")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: err.Error()})
 		return

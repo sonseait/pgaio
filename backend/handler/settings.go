@@ -12,13 +12,13 @@ type SettingsHandler struct {
 	config    *service.ConfigStore
 	scheduler interface {
 		Restart()
-		Status() map[string]interface{}
+		Status() map[string]any
 	}
 }
 
 func NewSettingsHandler(config *service.ConfigStore, scheduler interface {
 	Restart()
-	Status() map[string]interface{}
+	Status() map[string]any
 }) *SettingsHandler {
 	return &SettingsHandler{config: config, scheduler: scheduler}
 }
@@ -59,7 +59,7 @@ func (h *SettingsHandler) UpdateSettings(w http.ResponseWriter, r *http.Request)
 // GetScheduleStatus returns backup scheduler status.
 func (h *SettingsHandler) GetScheduleStatus(w http.ResponseWriter, r *http.Request) {
 	if h.scheduler == nil {
-		writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]interface{}{"enabled": false}})
+		writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]any{"enabled": false}})
 		return
 	}
 	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: h.scheduler.Status()})

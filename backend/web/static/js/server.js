@@ -66,20 +66,41 @@ const ServerOverview = {
                                 </div>`;
 
                             if (schema.tables && schema.tables.length > 0) {
-                                html += `<table class="data-table">
+                                const maxTotal = Math.max(...schema.tables.map(t => t.totalBytes || t.sizeBytes || 0), 1);
+                                html += `<table class="data-table" style="table-layout:fixed;width:100%">
                                     <thead><tr>
                                         <th style="padding-left:38px">table</th>
-                                        <th style="width:100px">rows</th>
-                                        <th style="width:100px">size</th>
+                                        <th style="width:90px">total</th>
+                                        <th style="width:80px">table</th>
+                                        <th style="width:80px">index</th>
+                                        <th style="width:70px">toast</th>
+                                        <th style="width:80px">rows</th>
+                                        <th style="width:180px">distribution</th>
                                     </tr></thead><tbody>`;
                                 schema.tables.forEach(t => {
+                                    const total = t.totalBytes || t.sizeBytes || 0;
+                                    const tbl = t.tableBytes || 0;
+                                    const idx = t.indexBytes || 0;
+                                    const tst = t.toastBytes || 0;
+                                    const tablePct = total > 0 ? (tbl / total * 100).toFixed(0) : 0;
+                                    const indexPct = total > 0 ? (idx / total * 100).toFixed(0) : 0;
+                                    const toastPct = total > 0 ? (tst / total * 100).toFixed(0) : 0;
+                                    const widthPct = (total / maxTotal * 100).toFixed(0);
                                     html += `<tr>
                                         <td style="padding-left:38px">
                                             <i data-lucide="table" style="width:10px;height:10px;color:var(--text-2);margin-right:4px;vertical-align:middle"></i>
                                             ${this.esc(t.name)}
                                         </td>
-                                        <td class="dim">${t.rows.toLocaleString()}</td>
-                                        <td class="dim">${this.esc(t.size)}</td>
+                                        <td class="dim">${formatBytes(total)}</td>
+                                        <td class="dim">${formatBytes(tbl)}</td>
+                                        <td class="dim">${formatBytes(idx)}</td>
+                                        <td class="dim">${formatBytes(tst)}</td>
+                                        <td class="dim">${fmtNum(t.rows)}</td>
+                                        <td><div style="display:flex;height:12px;width:${widthPct}%;min-width:4px">
+                                            <div style="background:var(--accent);width:${tablePct}%" title="table ${tablePct}%"></div>
+                                            <div style="background:var(--green);width:${indexPct}%" title="index ${indexPct}%"></div>
+                                            <div style="background:var(--yellow);width:${toastPct}%" title="toast ${toastPct}%"></div>
+                                        </div></td>
                                     </tr>`;
                                 });
                                 html += `</tbody></table>`;

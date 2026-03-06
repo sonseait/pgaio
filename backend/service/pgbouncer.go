@@ -250,7 +250,7 @@ func (p *PgBouncer) Kill(ctx context.Context, database string) error {
 	return err
 }
 
-func toInt64(v interface{}) (int64, error) {
+func toInt64(v any) (int64, error) {
 	switch val := v.(type) {
 	case int64:
 		return val, nil
@@ -272,7 +272,7 @@ func toInt64(v interface{}) (int64, error) {
 	}
 }
 
-func toInt(v interface{}) (int, error) {
+func toInt(v any) (int, error) {
 	n, err := toInt64(v)
 	return int(n), err
 }

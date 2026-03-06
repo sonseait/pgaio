@@ -7,7 +7,10 @@ const SQLEditor = {
     async render(container) {
         container.innerHTML = `
             <div class="flex-between mb-8">
-                <span class="card-title" style="margin:0">sql editor</span>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <span class="card-title" style="margin:0">sql editor</span>
+                    <div id="sql-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
+                </div>
                 <div class="flex gap-4">
                     <button onclick="SQLEditor.toggleHistory()" class="btn btn-sm" id="btn-history">
                         <i data-lucide="history" class="icon-sm"></i> history
@@ -47,6 +50,7 @@ const SQLEditor = {
         `;
 
         lucide.createIcons();
+        await DbSelector.renderInto(document.getElementById('sql-db-sel'), () => {});
 
         document.getElementById('sql-input').addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -177,7 +181,7 @@ const SQLEditor = {
         try {
             const data = await apiProtected('/sql/execute', {
                 method: 'POST',
-                body: JSON.stringify({ query }),
+                body: JSON.stringify({ query, database: DbSelector.getSelected() }),
             });
             const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
 

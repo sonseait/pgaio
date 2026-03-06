@@ -5,35 +5,50 @@ import (
 	"net/http"
 
 	"pgaio/model"
+	"pgaio/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ServerOverviewHandler struct {
-	pool *pgxpool.Pool
+	poolMgr *service.PoolManager
 }
 
-func NewServerOverviewHandler(pool *pgxpool.Pool) *ServerOverviewHandler {
-	return &ServerOverviewHandler{pool: pool}
+func NewServerOverviewHandler(poolMgr *service.PoolManager) *ServerOverviewHandler {
+	return &ServerOverviewHandler{poolMgr: poolMgr}
+}
+
+func (h *ServerOverviewHandler) getPool(r *http.Request) *pgxpool.Pool {
+	db := r.URL.Query().Get("database")
+	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	if err != nil {
+		return h.poolMgr.DefaultPool()
+	}
+	return pool
 }
 
 // GetOverview returns database, schema, and table information.
 func (h *ServerOverviewHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	defaultPool := h.poolMgr.DefaultPool()
 
-	// Server info
+	// Server info (server-global queries use default pool)
 	var version string
 	var startTime string
-	h.pool.QueryRow(ctx, "SELECT version()").Scan(&version)
-	h.pool.QueryRow(ctx, "SELECT pg_postmaster_start_time()::text").Scan(&startTime)
+	defaultPool.QueryRow(ctx, "SELECT version()").Scan(&version)
+	defaultPool.QueryRow(ctx, "SELECT pg_postmaster_start_time()::text").Scan(&startTime)
 
 	// List databases
 	type TableInfo struct {
-		Schema    string `json:"schema"`
-		Name      string `json:"name"`
-		Rows      int64  `json:"rows"`
-		Size      string `json:"size"`
-		SizeBytes int64  `json:"sizeBytes"`
+		Schema     string `json:"schema"`
+		Name       string `json:"name"`
+		Rows       int64  `json:"rows"`
+		Size       string `json:"size"`
+		SizeBytes  int64  `json:"sizeBytes"`
+		TotalBytes int64  `json:"totalBytes"`
+		TableBytes int64  `json:"tableBytes"`
+		IndexBytes int64  `json:"indexBytes"`
+		ToastBytes int64  `json:"toastBytes"`
 	}
 
 	type SchemaInfo struct {
@@ -61,8 +76,8 @@ func (h *ServerOverviewHandler) GetOverview(w http.ResponseWriter, r *http.Reque
 		TotalTables int            `json:"totalTables"`
 	}
 
-	// Get databases
-	dbRows, err := h.pool.Query(ctx, `
+	// Get databases (server-global query)
+	dbRows, err := defaultPool.Query(ctx, `
 		SELECT d.datname, pg_database_size(d.datname)::text, pg_database_size(d.datname),
 			   r.rolname, pg_encoding_to_char(d.encoding)
 		FROM pg_database d
@@ -88,17 +103,15 @@ func (h *ServerOverviewHandler) GetOverview(w http.ResponseWriter, r *http.Reque
 		databases = append(databases, db)
 	}
 
-	// Get schemas and tables for the current database only
+	// Get schemas and tables for each database using pool manager
 	for i, db := range databases {
-		// We can only query the current database
-		var currentDB string
-		h.pool.QueryRow(ctx, "SELECT current_database()").Scan(&currentDB)
-		if db.Name != currentDB {
+		dbPool, err := h.poolMgr.GetPool(ctx, db.Name)
+		if err != nil {
 			continue
 		}
 
 		// Get schemas
-		schemaRows, err := h.pool.Query(ctx, `
+		schemaRows, err := dbPool.Query(ctx, `
 			SELECT schema_name FROM information_schema.schemata
 			WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
 			ORDER BY schema_name
@@ -118,20 +131,26 @@ func (h *ServerOverviewHandler) GetOverview(w http.ResponseWriter, r *http.Reque
 		schemaRows.Close()
 
 		// Get tables with sizes
-		tableRows, err := h.pool.Query(ctx, `
+		tableRows, err := dbPool.Query(ctx, `
 			SELECT schemaname, relname,
 				   n_live_tup,
-				   pg_size_pretty(pg_total_relation_size(schemaname || '.' || relname)),
-				   pg_total_relation_size(schemaname || '.' || relname)
+				   pg_size_pretty(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname))),
+				   pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname)),
+				   pg_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname)),
+				   pg_indexes_size(quote_ident(schemaname)||'.'||quote_ident(relname)),
+				   GREATEST(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname)) -
+				     pg_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname)) -
+				     pg_indexes_size(quote_ident(schemaname)||'.'||quote_ident(relname)), 0)
 			FROM pg_stat_user_tables
-			ORDER BY schemaname, relname
+			ORDER BY pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname)) DESC
 		`)
 		if err == nil {
 			dbTableCount := 0
 			for tableRows.Next() {
 				var t TableInfo
 				var schema string
-				tableRows.Scan(&schema, &t.Name, &t.Rows, &t.Size, &t.SizeBytes)
+				tableRows.Scan(&schema, &t.Name, &t.Rows, &t.Size, &t.SizeBytes, &t.TableBytes, &t.IndexBytes, &t.ToastBytes)
+				t.TotalBytes = t.SizeBytes
 				t.Schema = schema
 				if si, ok := schemaMap[schema]; ok {
 					si.Tables = append(si.Tables, t)

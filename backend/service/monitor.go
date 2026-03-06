@@ -36,10 +36,10 @@ func NewMonitor(pool *pgxpool.Pool) *Monitor {
 func (m *Monitor) CollectStats(ctx context.Context) (*model.PgStat, error) {
 	stat := &model.PgStat{Timestamp: time.Now()}
 
-	// Database stats
-	db, err := m.getDatabaseStats(ctx)
+	// Database stats (all non-template databases)
+	dbs, err := m.getDatabaseStats(ctx)
 	if err == nil {
-		stat.Database = db
+		stat.Databases = dbs
 	}
 
 	// Activity
@@ -64,12 +64,13 @@ func (m *Monitor) CollectStats(ctx context.Context) (*model.PgStat, error) {
 	return stat, nil
 }
 
-func (m *Monitor) getDatabaseStats(ctx context.Context) (model.DatabaseStats, error) {
-	var s model.DatabaseStats
-	err := m.pool.QueryRow(ctx, `
+func (m *Monitor) getDatabaseStats(ctx context.Context) ([]model.DatabaseStats, error) {
+	rows, err := m.pool.Query(ctx, `
 		SELECT
 			d.datname,
 			pg_size_pretty(pg_database_size(d.datname)),
+			pg_database_size(d.datname),
+			COALESCE(s.numbackends, 0),
 			COALESCE(s.xact_commit, 0),
 			COALESCE(s.xact_rollback, 0),
 			COALESCE(s.blks_read, 0),
@@ -77,10 +78,13 @@ func (m *Monitor) getDatabaseStats(ctx context.Context) (model.DatabaseStats, er
 			CASE WHEN COALESCE(s.blks_hit, 0) + COALESCE(s.blks_read, 0) = 0 THEN 0
 				ELSE round(COALESCE(s.blks_hit, 0)::numeric / (COALESCE(s.blks_hit, 0) + COALESCE(s.blks_read, 0))::numeric * 100, 2)
 			END,
+			COALESCE(s.blk_read_time, 0),
+			COALESCE(s.blk_write_time, 0),
 			COALESCE(s.temp_files, 0),
 			COALESCE(s.temp_bytes, 0),
 			COALESCE(s.deadlocks, 0),
 			COALESCE(s.conflicts, 0),
+			COALESCE(s.checksum_failures, 0),
 			COALESCE(s.tup_returned, 0),
 			COALESCE(s.tup_fetched, 0),
 			COALESCE(s.tup_inserted, 0),
@@ -88,17 +92,37 @@ func (m *Monitor) getDatabaseStats(ctx context.Context) (model.DatabaseStats, er
 			COALESCE(s.tup_deleted, 0)
 		FROM pg_database d
 		LEFT JOIN pg_stat_database s ON s.datname = d.datname
-		WHERE d.datname = current_database()
-	`).Scan(
-		&s.Name, &s.Size,
-		&s.TxCommit, &s.TxRollback,
-		&s.BlksRead, &s.BlksHit, &s.CacheHitRatio,
-		&s.TempFiles, &s.TempBytes,
-		&s.Deadlocks, &s.Conflicts,
-		&s.TupReturned, &s.TupFetched,
-		&s.TupInserted, &s.TupUpdated, &s.TupDeleted,
-	)
-	return s, err
+		WHERE d.datistemplate = false
+		ORDER BY pg_database_size(d.datname) DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []model.DatabaseStats
+	for rows.Next() {
+		var s model.DatabaseStats
+		if err := rows.Scan(
+			&s.Name, &s.Size, &s.SizeBytes,
+			&s.NumBackends,
+			&s.TxCommit, &s.TxRollback,
+			&s.BlksRead, &s.BlksHit, &s.CacheHitRatio,
+			&s.BlkReadTime, &s.BlkWriteTime,
+			&s.TempFiles, &s.TempBytes,
+			&s.Deadlocks, &s.Conflicts,
+			&s.ChecksumFailures,
+			&s.TupReturned, &s.TupFetched,
+			&s.TupInserted, &s.TupUpdated, &s.TupDeleted,
+		); err != nil {
+			continue
+		}
+		stats = append(stats, s)
+	}
+	if stats == nil {
+		stats = []model.DatabaseStats{}
+	}
+	return stats, nil
 }
 
 func (m *Monitor) getActivityStats(ctx context.Context) (model.ActivityStats, error) {
@@ -112,7 +136,7 @@ func (m *Monitor) getActivityStats(ctx context.Context) (model.ActivityStats, er
 			count(*) FILTER (WHERE state = 'idle'),
 			count(*) FILTER (WHERE wait_event IS NOT NULL AND state = 'active')
 		FROM pg_stat_activity
-		WHERE backend_type = 'client backend'
+		WHERE backend_type = 'client backend' AND pid != pg_backend_pid()
 	`).Scan(&a.TotalConnections, &a.ActiveQueries, &a.IdleConnections, &a.WaitingQueries)
 	if err != nil {
 		return a, err
@@ -126,7 +150,7 @@ func (m *Monitor) getActivityStats(ctx context.Context) (model.ActivityStats, er
 			COALESCE(datname, ''),
 			COALESCE(state, 'unknown'),
 			COALESCE(LEFT(query, 200), ''),
-			COALESCE(age(clock_timestamp(), query_start)::text, ''),
+			COALESCE(EXTRACT(EPOCH FROM age(clock_timestamp(), query_start)) * 1000, 0)::bigint,
 			COALESCE(wait_event, ''),
 			COALESCE(backend_type, ''),
 			COALESCE(query_start, now())
@@ -142,9 +166,11 @@ func (m *Monitor) getActivityStats(ctx context.Context) (model.ActivityStats, er
 
 	for rows.Next() {
 		var q model.ActiveQuery
-		if err := rows.Scan(&q.PID, &q.User, &q.Database, &q.State, &q.Query, &q.Duration, &q.WaitEvent, &q.BackendType, &q.QueryStart); err != nil {
+		var durationMs float64
+		if err := rows.Scan(&q.PID, &q.User, &q.Database, &q.State, &q.Query, &durationMs, &q.WaitEvent, &q.BackendType, &q.QueryStart); err != nil {
 			continue
 		}
+		q.Duration = int64(durationMs)
 		a.Queries = append(a.Queries, q)
 	}
 	if a.Queries == nil {

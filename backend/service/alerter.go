@@ -122,9 +122,9 @@ func (a *Alerter) GetHistory() []AlertEvent {
 }
 
 // GetStatus returns current alert status.
-func (a *Alerter) GetStatus() map[string]interface{} {
+func (a *Alerter) GetStatus() map[string]any {
 	cfg := a.config.GetAlerts()
-	return map[string]interface{}{
+	return map[string]any{
 		"enabled":    cfg.Enabled,
 		"thresholds": cfg.Thresholds,
 		"telegram":   cfg.Telegram.BotToken != "",
