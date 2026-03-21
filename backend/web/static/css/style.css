@@ -797,3 +797,222 @@ td:last-child {
   font-size: 10px;
   color: var(--text-2);
 }
+
+/* ============================
+   Tuner Wizard
+   ============================ */
+
+/* Step indicator */
+.tuner-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 8px 0;
+}
+.tuner-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  font-size: 10px;
+  color: var(--text-2);
+}
+.tuner-step .step-num {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  font-weight: 600;
+}
+.tuner-step.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tuner-step.active .step-num {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+.tuner-step.done {
+  color: var(--green);
+  border-color: var(--green);
+}
+.tuner-step.done .step-num {
+  background: var(--green);
+  color: #000;
+  border-color: var(--green);
+}
+.tuner-step-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.tuner-step-line.done {
+  background: var(--green);
+}
+
+/* System info grid */
+.tuner-sys-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.tuner-sys-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+.tuner-sys-icon {
+  color: var(--accent);
+}
+.tuner-sys-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.tuner-sys-label {
+  font-size: 9px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.tuner-sys-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+  margin-top: 1px;
+}
+
+/* Profile cards */
+.tuner-profiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.tuner-profile-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+.tuner-profile-card:hover {
+  border-color: var(--text-2);
+}
+.tuner-profile-card.active {
+  border-color: var(--accent);
+  background: rgba(68, 170, 255, 0.05);
+}
+.profile-icon {
+  color: var(--text-2);
+}
+.profile-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.tuner-profile-card.active .profile-icon {
+  color: var(--accent);
+}
+.profile-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+.profile-desc {
+  font-size: 9px;
+  color: var(--text-2);
+  line-height: 1.3;
+}
+
+/* Connection calculator */
+.tuner-conn-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tuner-conn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.tuner-conn-section {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+}
+.conn-section-title {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.conn-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 11px;
+}
+.tuner-conn-summary {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(68, 170, 255, 0.05);
+  border: 1px solid rgba(68, 170, 255, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Review table */
+.tuner-unchanged td {
+  opacity: 0.5;
+}
+
+/* Warning banner */
+.tuner-warning {
+  padding: 8px 12px;
+  background: rgba(238, 170, 51, 0.08);
+  border: 1px solid var(--yellow);
+  color: var(--yellow);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flex-end {
+  display: flex;
+  justify-content: flex-end;
+}
+.mt-8 {
+  margin-top: 8px;
+}
+.ml-4 {
+  margin-left: 4px;
+}
+
+@media (max-width: 768px) {
+  .tuner-sys-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .tuner-profiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .tuner-conn-grid {
+    grid-template-columns: 1fr;
+  }
+}

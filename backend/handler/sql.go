@@ -232,3 +232,86 @@ func (h *SQLHandler) GetSnippets(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: snippets})
 }
+
+// GetSchema returns table/column/function info for SQL autocomplete.
+func (h *SQLHandler) GetSchema(w http.ResponseWriter, r *http.Request) {
+	pool := h.getPool(r)
+	ctx := r.Context()
+
+	type TableInfo struct {
+		Name   string `json:"name"`
+		Schema string `json:"schema"`
+	}
+	type ColumnInfo struct {
+		Name  string `json:"name"`
+		Table string `json:"table"`
+		Type  string `json:"type"`
+	}
+	type SchemaInfo struct {
+		Tables    []TableInfo  `json:"tables"`
+		Columns   []ColumnInfo `json:"columns"`
+		Functions []string     `json:"functions"`
+	}
+
+	info := SchemaInfo{
+		Tables:    []TableInfo{},
+		Columns:   []ColumnInfo{},
+		Functions: []string{},
+	}
+
+	// Tables
+	rows, err := pool.Query(ctx, `
+		SELECT table_schema, table_name
+		FROM information_schema.tables
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+		ORDER BY table_schema, table_name
+	`)
+	if err == nil {
+		for rows.Next() {
+			var t TableInfo
+			if rows.Scan(&t.Schema, &t.Name) == nil {
+				info.Tables = append(info.Tables, t)
+			}
+		}
+		rows.Close()
+	}
+
+	// Columns (limit to avoid huge responses)
+	rows, err = pool.Query(ctx, `
+		SELECT table_name, column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+		ORDER BY table_name, ordinal_position
+		LIMIT 2000
+	`)
+	if err == nil {
+		for rows.Next() {
+			var c ColumnInfo
+			if rows.Scan(&c.Table, &c.Name, &c.Type) == nil {
+				info.Columns = append(info.Columns, c)
+			}
+		}
+		rows.Close()
+	}
+
+	// Functions
+	rows, err = pool.Query(ctx, `
+		SELECT p.proname
+		FROM pg_proc p
+		JOIN pg_namespace n ON p.pronamespace = n.oid
+		WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+		ORDER BY p.proname
+		LIMIT 500
+	`)
+	if err == nil {
+		for rows.Next() {
+			var name string
+			if rows.Scan(&name) == nil {
+				info.Functions = append(info.Functions, name)
+			}
+		}
+		rows.Close()
+	}
+
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: info})
+}

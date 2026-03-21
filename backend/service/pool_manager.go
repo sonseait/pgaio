@@ -107,6 +107,29 @@ func (pm *PoolManager) Close() {
 	pm.pools = make(map[string]*pgxpool.Pool)
 }
 
+// DefaultConnString returns a CLI-compatible connection string for the default database.
+func (pm *PoolManager) DefaultConnString() string {
+	host := getPoolEnv("PGHOST", "/tmp")
+	port := getPoolEnv("PGPORT", "5432")
+	user := getPoolEnv("POSTGRESQL_USERNAME", "postgres")
+	pass := getPoolEnv("POSTGRESQL_PASSWORD", "")
+	db := getPoolEnv("POSTGRESQL_DATABASE", "postgres")
+
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, pass, db)
+}
+
+// ConnStringForDB returns a CLI-compatible connection string for a specific database.
+func (pm *PoolManager) ConnStringForDB(dbName string) string {
+	host := getPoolEnv("PGHOST", "/tmp")
+	port := getPoolEnv("PGPORT", "5432")
+	user := getPoolEnv("POSTGRESQL_USERNAME", "postgres")
+	pass := getPoolEnv("POSTGRESQL_PASSWORD", "")
+
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, pass, dbName)
+}
+
 func getPoolEnv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

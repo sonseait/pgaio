@@ -41,6 +41,7 @@ log_min_messages = info
 log_line_prefix = '%t [%p] %q%u@%d '
 shared_preload_libraries = 'pg_stat_statements'
 pg_stat_statements.track = all
+search_path = '"$user", public, extensions'
 LEOF
 
     # Enable WAL archiving for PITR (only if S3 is configured)
@@ -55,13 +56,37 @@ AEOF
     fi
 echo "✅ PostgreSQL file logging + pg_stat_statements enabled ($PG_LOG_DIR)"
 
-# Auto-create pg_stat_statements extension after PostgreSQL starts
+# Auto-create extensions after PostgreSQL starts
+# Install into a dedicated 'extensions' schema so DROP SCHEMA public CASCADE won't remove them
+# Install into template1 so all future databases inherit them automatically
 (
     sleep 30
     until pg_isready -q; do sleep 2; done
-    PGPASSWORD="${POSTGRESQL_PASSWORD}" psql -U "${POSTGRESQL_USERNAME:-postgres}" -d "${POSTGRESQL_DATABASE:-postgres}" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null && \
-        echo "✅ pg_stat_statements extension created" || \
-        echo "⚠️  pg_stat_statements extension creation failed"
+
+    PG_USER="${POSTGRESQL_USERNAME:-postgres}"
+    PG_DB="${POSTGRESQL_DATABASE:-postgres}"
+    EXTENSIONS="pg_stat_statements pg_idkit pg_repack"
+    EXT_SCHEMA="extensions"
+
+    install_extensions() {
+        local db="$1"
+        # Create dedicated schema for extensions
+        PGPASSWORD="${POSTGRESQL_PASSWORD}" psql -U "$PG_USER" -d "$db" -c \
+            "CREATE SCHEMA IF NOT EXISTS $EXT_SCHEMA;" 2>/dev/null
+
+        # Install each extension into the dedicated schema
+        for ext in $EXTENSIONS; do
+            PGPASSWORD="${POSTGRESQL_PASSWORD}" psql -U "$PG_USER" -d "$db" -c \
+                "CREATE EXTENSION IF NOT EXISTS $ext SCHEMA $EXT_SCHEMA;" 2>/dev/null && \
+                echo "✅ $ext installed in $db.$EXT_SCHEMA" || \
+                echo "⚠️  $ext failed in $db"
+        done
+    }
+
+    install_extensions "template1"
+    install_extensions "$PG_DB"
+
+    echo "✅ Extensions ready in '$EXT_SCHEMA' schema (global search_path set in postgresql.conf)"
 ) &
 
 # Execute original bitnami entrypoint

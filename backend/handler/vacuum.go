@@ -132,9 +132,9 @@ func (h *VacuumHandler) GetBloatStats(w http.ResponseWriter, r *http.Request) {
 	pool := h.getPool(r)
 	rows, err := pool.Query(r.Context(), `
 		SELECT
-			schemaname, tablename,
-			pg_size_pretty(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename))) as total_size,
-			pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename)) as total_bytes,
+			schemaname, relname,
+			pg_size_pretty(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname))) as total_size,
+			pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(relname)) as total_bytes,
 			COALESCE(n_dead_tup, 0) as dead_tuples,
 			COALESCE(n_live_tup, 0) as live_tuples,
 			CASE WHEN COALESCE(n_live_tup, 0) + COALESCE(n_dead_tup, 0) > 0

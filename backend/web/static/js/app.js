@@ -418,6 +418,10 @@ const pages = {
         title: 'alerts', sub: 'notifications & thresholds',
         render: (el) => { if (typeof AlertsPage !== 'undefined') AlertsPage.render(el); },
     },
+    tuner: {
+        title: 'db tuner', sub: 'optimization wizard',
+        render: (el) => { if (typeof TunerWizard !== 'undefined') TunerWizard.render(el); },
+    },
     auth: {
         title: 'totp setup', sub: 'authenticator configuration',
         render: async (el) => {

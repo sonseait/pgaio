@@ -50,6 +50,15 @@ RUN tar -xf /tmp/pg_idkit.tar.gz -C /tmp && \
     cp /tmp/pg_idkit-0.4.0/share/postgresql/extension/pg_idkit* /opt/bitnami/postgresql/share/extension/ && \
     rm -rf /tmp/pg_idkit*
 
+# Install pg_repack extension + CLI (pre-built for PG18)
+COPY bin/pg_repack-1.5.3-pg18-gnu.tar.gz /tmp/pg_repack.tar.gz
+RUN tar -xf /tmp/pg_repack.tar.gz -C /tmp && \
+    cp /tmp/lib/pg_repack.so /opt/bitnami/postgresql/lib/ && \
+    cp /tmp/extension/pg_repack* /opt/bitnami/postgresql/share/extension/ && \
+    cp /tmp/bin/pg_repack /usr/local/bin/ && \
+    chmod +x /usr/local/bin/pg_repack && \
+    rm -rf /tmp/pg_repack* /tmp/lib /tmp/bin /tmp/extension
+
 # Copy PgBouncer binary from builder
 COPY --from=pgbouncer-builder /usr/local/bin/pgbouncer /usr/local/bin/pgbouncer
 RUN chmod +x /usr/local/bin/pgbouncer
@@ -71,6 +80,9 @@ RUN chmod +x /docker-entrypoint-pg.sh
 # Master entrypoint
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+
+# Fix /tmp permissions (tar extraction in RUN commands can change /tmp perms)
+RUN chmod 1777 /tmp
 
 # Expose ports: PG=5432, PgBouncer=6432, Web=8080
 EXPOSE 5432 6432 8080

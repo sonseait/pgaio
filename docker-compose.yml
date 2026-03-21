@@ -6,14 +6,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: pgaio
     ports:
       - "8080:8080" # Web UI
+      - "5432:5432" # PostgreSQL
     environment:
       # PostgreSQL
-      - POSTGRESQL_USERNAME=postgres
-      - POSTGRESQL_PASSWORD=postgres
-      - POSTGRESQL_DATABASE=postgres
+      - ALLOW_EMPTY_PASSWORD=yes
       # WAL-G + S3
       - WALG_S3_PREFIX=s3://pgaio-backups/wal-g
       - AWS_ACCESS_KEY_ID=minioadmin
@@ -29,7 +27,6 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: pgaio-minio
     ports:
       - "9000:9000" # S3 API
       - "9001:9001" # MinIO Console
@@ -40,7 +37,6 @@ services:
 
   minio-init:
     image: minio/mc:latest
-    container_name: pgaio-minio-init
     depends_on:
       - minio
     entrypoint: >
@@ -50,3 +46,10 @@ services:
       mc mb --ignore-existing myminio/pgaio-backups;
       echo 'Bucket created successfully';
       "
+
+  redis:
+    image: bitnami/redis:latest
+    ports:
+      - "6379:6379" # Redis API
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
 	"pgaio/model"
@@ -248,6 +249,50 @@ func (p *PgBouncer) Kill(ctx context.Context, database string) error {
 	}
 	_, err = conn.Exec(ctx, "KILL "+database)
 	return err
+}
+
+// UpdateConfig updates PgBouncer config file settings and reloads.
+func (p *PgBouncer) UpdateConfig(ctx context.Context, settings map[string]string) error {
+	configPath := "/etc/pgbouncer/pgbouncer.ini"
+
+	// Read current config
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read pgbouncer config: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	applied := map[string]bool{}
+
+	// Update existing settings
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip comments and empty lines
+		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "[") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		if newVal, ok := settings[key]; ok {
+			lines[i] = fmt.Sprintf("%s = %s", key, newVal)
+			applied[key] = true
+		}
+	}
+
+	// Write back
+	if err := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+		return fmt.Errorf("failed to write pgbouncer config: %w", err)
+	}
+
+	// Reload PgBouncer
+	if err := p.Reload(ctx); err != nil {
+		return fmt.Errorf("config written but reload failed: %w", err)
+	}
+
+	return nil
 }
 
 func toInt64(v any) (int64, error) {

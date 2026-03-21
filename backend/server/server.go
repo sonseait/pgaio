@@ -34,6 +34,8 @@ type Server struct {
 	extensions *handler.ExtensionsHandler
 	alerts     *handler.AlertsHandler
 	database   *handler.DatabaseHandler
+	tuner      *handler.TunerHandler
+	repack     *handler.RepackHandler
 	totp       *service.TOTP
 }
 
@@ -71,6 +73,8 @@ func New(
 		extensions: handler.NewExtensionsHandler(poolMgr),
 		alerts:     handler.NewAlertsHandler(alerter),
 		database:   handler.NewDatabaseHandler(pool),
+		tuner:      handler.NewTunerHandler(service.NewTuner(pool), pool, pgbouncer),
+		repack:     handler.NewRepackHandler(poolMgr),
 		totp:       totpSvc,
 	}
 	s.routes()
@@ -134,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sql/snippets", s.sql.GetSnippets)
 	s.mux.HandleFunc("GET /api/sql/history", s.sql.GetHistory)
 	s.mux.HandleFunc("DELETE /api/sql/history", s.protect(s.sql.ClearHistory))
+	s.mux.HandleFunc("GET /api/sql/schema", s.sql.GetSchema)
 
 	// Slow Queries + Explain
 	s.mux.HandleFunc("GET /api/queries/slow", s.queries.GetSlowQueries)
@@ -144,6 +149,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/vacuum/stats", s.vacuum.GetVacuumStats)
 	s.mux.HandleFunc("GET /api/vacuum/bloat", s.vacuum.GetBloatStats)
 	s.mux.HandleFunc("POST /api/vacuum/trigger", s.protect(s.vacuum.TriggerVacuum))
+
+	// Repack (online table compaction)
+	s.mux.HandleFunc("GET /api/repack/tables", s.repack.GetTables)
+	s.mux.HandleFunc("POST /api/repack/run", s.protect(s.repack.Run))
+	s.mux.HandleFunc("GET /api/repack/status", s.repack.GetStatus)
+	s.mux.HandleFunc("POST /api/repack/cancel", s.protect(s.repack.CancelRepack))
 
 	// Locks
 	s.mux.HandleFunc("GET /api/locks", s.locks.GetLocks)
@@ -164,6 +175,11 @@ func (s *Server) routes() {
 	// Alerts
 	s.mux.HandleFunc("GET /api/alerts", s.alerts.GetAlerts)
 	s.mux.HandleFunc("POST /api/alerts/test", s.protect(s.alerts.TestAlert))
+
+	// DB Tuner Wizard
+	s.mux.HandleFunc("GET /api/tuner/system", s.tuner.GetSystemInfo)
+	s.mux.HandleFunc("POST /api/tuner/analyze", s.tuner.Analyze)
+	s.mux.HandleFunc("POST /api/tuner/apply", s.protect(s.tuner.Apply))
 
 	// Static files (embedded frontend)
 	staticFS, err := fs.Sub(web.StaticFiles, "static")
