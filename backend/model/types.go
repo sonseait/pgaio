@@ -5,14 +5,17 @@ import "time"
 // PostgreSQL Stats
 
 type PgStat struct {
-	Timestamp      time.Time        `json:"timestamp"`
-	Databases      []DatabaseStats  `json:"databases"`
-	Activity       ActivityStats    `json:"activity"`
-	Connections    ConnectionStats  `json:"connections"`
-	Replication    []ReplicationLag `json:"replication"`
-	System         SystemStats      `json:"system"`
-	PgBouncerStats *PgBouncerStat   `json:"pgbouncer,omitempty"`
-	PgBouncerPools []PgBouncerPool  `json:"pgbouncerPools,omitempty"`
+	Timestamp        time.Time         `json:"timestamp"`
+	Databases        []DatabaseStats   `json:"databases"`
+	Activity         ActivityStats     `json:"activity"`
+	Connections      ConnectionStats   `json:"connections"`
+	Replication      []ReplicationLag  `json:"replication"`
+	System           SystemStats       `json:"system"`
+	WAL              WALStats          `json:"wal"`
+	BGWriter         BGWriterStats     `json:"bgwriter"`
+	CollectionErrors map[string]string `json:"collectionErrors,omitempty"`
+	PgBouncerStats   *PgBouncerStat    `json:"pgbouncer,omitempty"`
+	PgBouncerPools   []PgBouncerPool   `json:"pgbouncerPools,omitempty"`
 }
 
 type DatabaseStats struct {
@@ -40,11 +43,22 @@ type DatabaseStats struct {
 }
 
 type ActivityStats struct {
-	TotalConnections int           `json:"totalConnections"`
-	ActiveQueries    int           `json:"activeQueries"`
-	IdleConnections  int           `json:"idleConnections"`
-	WaitingQueries   int           `json:"waitingQueries"`
-	Queries          []ActiveQuery `json:"queries"`
+	TotalConnections   int             `json:"totalConnections"`
+	ActiveQueries      int             `json:"activeQueries"`
+	IdleConnections    int             `json:"idleConnections"`
+	IdleInTransaction  int             `json:"idleInTransaction"`
+	OldestIdleInXactMs int64           `json:"oldestIdleInXactMs"`
+	LongRunningQueries int             `json:"longRunningQueries"`
+	WaitingQueries     int             `json:"waitingQueries"`
+	OldestQueryMs      int64           `json:"oldestQueryMs"`
+	WaitEvents         []WaitEventStat `json:"waitEvents"`
+	Queries            []ActiveQuery   `json:"queries"`
+}
+
+type WaitEventStat struct {
+	Type  string `json:"type"`
+	Event string `json:"event"`
+	Count int    `json:"count"`
 }
 
 type ActiveQuery struct {
@@ -63,16 +77,18 @@ type ConnectionStats struct {
 	MaxConnections       int `json:"maxConnections"`
 	UsedConnections      int `json:"usedConnections"`
 	AvailableConnections int `json:"availableConnections"`
+	AvailableTotal       int `json:"availableTotal"`
 	ReservedConnections  int `json:"reservedConnections"`
 }
 
 type ReplicationLag struct {
-	ClientAddr string `json:"clientAddr"`
-	State      string `json:"state"`
-	SentLag    string `json:"sentLag"`
-	WriteLag   string `json:"writeLag"`
-	FlushLag   string `json:"flushLag"`
-	ReplayLag  string `json:"replayLag"`
+	ClientAddr       string `json:"clientAddr"`
+	State            string `json:"state"`
+	SentLagBytes     int64  `json:"sentLagBytes"`
+	WriteLagBytes    int64  `json:"writeLagBytes"`
+	FlushLagBytes    int64  `json:"flushLagBytes"`
+	ReplayLagBytes   int64  `json:"replayLagBytes"`
+	ReplayLagSeconds int64  `json:"replayLagSeconds"`
 }
 
 type SystemStats struct {
@@ -89,6 +105,23 @@ type SystemStats struct {
 	LoadAvg5  float64 `json:"loadAvg5"`
 	LoadAvg15 float64 `json:"loadAvg15"`
 	Uptime    string  `json:"uptime"`
+}
+
+type WALStats struct {
+	CurrentLSN      string  `json:"currentLsn"`
+	BytesPerSec     float64 `json:"bytesPerSec"`
+	SegmentsPerHour float64 `json:"segmentsPerHour"`
+}
+
+type BGWriterStats struct {
+	CheckpointsTimed     int64   `json:"checkpointsTimed"`
+	CheckpointsRequested int64   `json:"checkpointsRequested"`
+	CheckpointWriteMs    float64 `json:"checkpointWriteMs"`
+	CheckpointSyncMs     float64 `json:"checkpointSyncMs"`
+	BuffersCheckpoint    int64   `json:"buffersCheckpoint"`
+	BuffersClean         int64   `json:"buffersClean"`
+	MaxwrittenClean      int64   `json:"maxwrittenClean"`
+	BuffersBackend       int64   `json:"buffersBackend"`
 }
 
 // WAL-G Backup
@@ -123,6 +156,7 @@ type RestoreRequest struct {
 type BackupTriggerResponse struct {
 	Message string `json:"message"`
 	Status  string `json:"status"`
+	JobID   string `json:"jobId,omitempty"`
 }
 
 // S3

@@ -14,6 +14,7 @@ const SQLEditor = {
                 <div style="display:flex;gap:8px;align-items:center">
                     <span class="card-title" style="margin:0">sql editor</span>
                     <div id="sql-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
+                    <div id="sql-profile-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
                 </div>
                 <div class="flex gap-4">
                     <button onclick="SQLEditor.toggleHistory()" class="btn btn-sm" id="btn-history">
@@ -53,6 +54,9 @@ const SQLEditor = {
         await DbSelector.renderInto(document.getElementById('sql-db-sel'), () => {
             this._reloadSchema();
         });
+        await ProfileSelector.renderInto(document.getElementById('sql-profile-sel'), 'sql', () => {
+            this._reloadSchema();
+        });
 
         document.getElementById('sql-snippets').addEventListener('change', (e) => {
             if (e.target.value && this._editor) {
@@ -66,6 +70,11 @@ const SQLEditor = {
 
         await this.loadSnippets();
         await this._initCodeMirror();
+        const draft = sessionStorage.getItem('pgaio_sql_draft');
+        if (draft) {
+            this._setQuery(draft);
+            sessionStorage.removeItem('pgaio_sql_draft');
+        }
     },
 
     // ===== CodeMirror 6 Initialization =====
@@ -286,8 +295,11 @@ const SQLEditor = {
     async _fetchSchema() {
         if (this._schemaCache) return this._schemaCache;
         try {
-            const db = DbSelector.getParam();
-            const res = await api(`/sql/schema${db}`);
+            const params = new URLSearchParams();
+            if (DbSelector.getSelected()) params.set('database', DbSelector.getSelected());
+            const profile = await ProfileSelector.ensureSelected('sql');
+            if (profile) params.set('profile', profile);
+            const res = await api(`/sql/schema?${params.toString()}`);
             if (res.success && res.data) {
                 this._schemaCache = res.data;
                 return res.data;
@@ -418,9 +430,10 @@ const SQLEditor = {
         const startTime = performance.now();
 
         try {
+            const profile = await ProfileSelector.ensureSelected('sql');
             const data = await apiProtected('/sql/execute', {
                 method: 'POST',
-                body: JSON.stringify({ query, database: DbSelector.getSelected() }),
+                body: JSON.stringify({ query, database: DbSelector.getSelected(), profile }),
             });
             const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
 

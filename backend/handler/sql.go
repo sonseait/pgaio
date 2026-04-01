@@ -32,7 +32,8 @@ func NewSQLHandler(poolMgr *service.PoolManager) *SQLHandler {
 
 func (h *SQLHandler) getPool(r *http.Request) *pgxpool.Pool {
 	db := r.URL.Query().Get("database")
-	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	profile := r.URL.Query().Get("profile")
+	pool, err := h.poolMgr.GetPoolForProfile(r.Context(), db, profile)
 	if err != nil {
 		return h.poolMgr.DefaultPool()
 	}
@@ -77,6 +78,7 @@ func (h *SQLHandler) ExecuteSQL(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query    string `json:"query"`
 		Database string `json:"database"`
+		Profile  string `json:"profile"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid request body"})
@@ -87,7 +89,7 @@ func (h *SQLHandler) ExecuteSQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool, err := h.poolMgr.GetPool(r.Context(), req.Database)
+	pool, err := h.poolMgr.GetPoolForProfile(r.Context(), req.Database, req.Profile)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to connect to database: " + err.Error()})
 		return

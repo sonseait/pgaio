@@ -12,19 +12,21 @@ import (
 	"time"
 
 	"pgaio/model"
+	"pgaio/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DatabaseHandler struct {
 	pool *pgxpool.Pool
+	jobs *service.JobStore
 }
 
-func NewDatabaseHandler(pool *pgxpool.Pool) *DatabaseHandler {
-	return &DatabaseHandler{pool: pool}
+func NewDatabaseHandler(pool *pgxpool.Pool, jobs *service.JobStore) *DatabaseHandler {
+	return &DatabaseHandler{pool: pool, jobs: jobs}
 }
 
-// ExportDatabase streams a pg_dump to the client as a download.
+// ExportDatabase starts a pg_dump job and stores the artifact for later download.
 func (h *DatabaseHandler) ExportDatabase(w http.ResponseWriter, r *http.Request) {
 	dbName := r.URL.Query().Get("database")
 	if dbName == "" {
@@ -58,34 +60,55 @@ func (h *DatabaseHandler) ExportDatabase(w http.ResponseWriter, r *http.Request)
 
 	timestamp := time.Now().Format("20060102-150405")
 	filename := fmt.Sprintf("%s-%s%s", dbName, timestamp, ext)
+	job := h.jobs.Start("export", filename, dbName, "export queued", map[string]string{
+		"format": format,
+	})
 
-	cmd := exec.Command("pg_dump", args...)
-	cmd.Env = append(os.Environ(),
-		"PGPASSWORD="+getHandlerEnv("POSTGRESQL_PASSWORD", ""),
-	)
+	go func() {
+		h.jobs.Update(job.ID, "running pg_dump", "")
+		tmpFile, err := os.CreateTemp("", "pgaio-export-*"+ext)
+		if err != nil {
+			h.jobs.Fail(job.ID, "failed to create export file", err.Error())
+			return
+		}
+		defer tmpFile.Close()
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to create pipe: " + err.Error()})
-		return
-	}
+		cmd := exec.Command("pg_dump", args...)
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+getHandlerEnv("POSTGRESQL_PASSWORD", ""))
+		cmd.Stdout = tmpFile
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
 
-	if err := cmd.Start(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "pg_dump failed to start: " + err.Error()})
-		return
-	}
+		if err := cmd.Run(); err != nil {
+			_ = os.Remove(tmpFile.Name())
+			h.jobs.Fail(job.ID, "pg_dump failed", stderr.String())
+			log.Printf("[database] pg_dump error: %v", err)
+			return
+		}
 
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	w.WriteHeader(http.StatusOK)
+		info, err := tmpFile.Stat()
+		if err != nil {
+			_ = os.Remove(tmpFile.Name())
+			h.jobs.Fail(job.ID, "export completed but file metadata is unavailable", err.Error())
+			return
+		}
 
-	if _, err := io.Copy(w, stdout); err != nil {
-		log.Printf("[database] export stream error: %v", err)
-	}
+		h.jobs.CompleteWithArtifact(job.ID, "export ready for download", &service.JobArtifact{
+			Path:        tmpFile.Name(),
+			Name:        filename,
+			ContentType: contentType,
+			SizeBytes:   info.Size(),
+		})
+	}()
 
-	if err := cmd.Wait(); err != nil {
-		log.Printf("[database] pg_dump error: %v", err)
-	}
+	writeJSON(w, http.StatusAccepted, model.APIResponse{
+		Success: true,
+		Data: map[string]string{
+			"jobId":   job.ID,
+			"message": "export started",
+			"status":  "running",
+		},
+	})
 }
 
 // ImportDatabase accepts a SQL/dump file upload and restores it.
@@ -152,30 +175,41 @@ func (h *DatabaseHandler) ImportDatabase(w http.ResponseWriter, r *http.Request)
 		opts = append(opts, "no-tablespaces")
 	}
 
+	job := h.jobs.Start("import", header.Filename, dbName, "import queued", map[string]string{
+		"file": header.Filename,
+	})
+
 	go func() {
 		defer os.Remove(tmpPath)
 		optsStr := "none"
 		if len(opts) > 0 {
 			optsStr = strings.Join(opts, ", ")
 		}
+		h.jobs.Update(job.ID, "restoring database dump", "")
 		log.Printf("[database] import started [%s]: %s (%s) into %s", optsStr, header.Filename, ext, dbName)
 
 		env := append(os.Environ(), "PGPASSWORD="+getHandlerEnv("POSTGRESQL_PASSWORD", ""))
 
 		// If clean mode: truncate all user tables before import
 		if clean {
+			h.jobs.Update(job.ID, "cleaning non-system schemas before import", "")
 			log.Println("[database] cleaning: truncating all user tables...")
 			truncSQL := `DO $$ DECLARE r RECORD; BEGIN
-				FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
-					EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
+				FOR r IN (
+					SELECT schemaname, tablename
+					FROM pg_tables
+					WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+				) LOOP
+					EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.schemaname) || '.' || quote_ident(r.tablename) || ' CASCADE';
 				END LOOP; END $$;`
 			truncCmd := exec.Command("psql", "-h", "/tmp", "-U", pgUser, "-d", dbName, "-c", truncSQL)
 			truncCmd.Env = env
 			if out, err := truncCmd.CombinedOutput(); err != nil {
+				h.jobs.Fail(job.ID, "clean step failed before import", string(out))
 				log.Printf("[database] truncate warning: %v\n%s", err, string(out))
-			} else {
-				log.Println("[database] truncate completed")
+				return
 			}
+			log.Println("[database] truncate completed")
 		}
 
 		var cmd *exec.Cmd
@@ -210,8 +244,10 @@ func (h *DatabaseHandler) ImportDatabase(w http.ResponseWriter, r *http.Request)
 		cmd.Env = env
 
 		if out, err := cmd.CombinedOutput(); err != nil {
+			h.jobs.Fail(job.ID, "import failed", string(out))
 			log.Printf("[database] import failed: %v\n%s", err, string(out))
 		} else {
+			h.jobs.Complete(job.ID, "import completed successfully")
 			log.Printf("[database] ✅ import completed: %s", header.Filename)
 		}
 	}()
@@ -219,6 +255,7 @@ func (h *DatabaseHandler) ImportDatabase(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusAccepted, model.APIResponse{
 		Success: true,
 		Data: map[string]string{
+			"jobId":    job.ID,
 			"message":  fmt.Sprintf("Import started for %s into %s", header.Filename, dbName),
 			"status":   "running",
 			"filename": header.Filename,

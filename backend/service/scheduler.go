@@ -76,14 +76,14 @@ func (s *Scheduler) Start() {
 
 func (s *Scheduler) runBackup() {
 	log.Println("⏰ Scheduled backup starting...")
-	_, err := s.walg.TriggerBackup(context.Background())
+	resp, err := s.walg.TriggerBackup(context.Background())
 	s.mu.Lock()
 	s.lastRun = time.Now()
 	s.mu.Unlock()
 	if err != nil {
 		log.Printf("⏰ Scheduled backup failed: %v", err)
 	} else {
-		log.Println("⏰ Scheduled backup completed")
+		log.Printf("⏰ Scheduled backup accepted (job: %s)", resp.JobID)
 	}
 }
 

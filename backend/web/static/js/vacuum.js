@@ -3,6 +3,8 @@
 const VacuumMonitor = {
     _tab: 'vacuum',
     _repackTimer: null,
+    _jobId: null,
+    _jobPoller: null,
 
     async render(container) {
         container.innerHTML = `
@@ -18,11 +20,13 @@ const VacuumMonitor = {
                 </div>
                 <button onclick="VacuumMonitor.load()" class="btn btn-sm"><i data-lucide="refresh-cw" class="icon-sm"></i> refresh</button>
             </div>
+            <div class="mb-8" id="vacuum-job-status"></div>
             <div id="vacuum-content"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
         `;
         lucide.createIcons();
         await DbSelector.renderInto(document.getElementById('vacuum-db-sel'), () => this.load());
         await this.load();
+        this.renderJobStatus();
     },
 
     switchTab(tab) {
@@ -208,10 +212,11 @@ const VacuumMonitor = {
         if (!await showConfirm('pg_repack', `Run pg_repack on "${tableName}"?\n\nThis will compact the table online with minimal locks.\nRequires ~2x free disk space of the table.`, { confirmText: 'run pg_repack' })) return;
 
         try {
-            await apiProtected('/repack/run', {
+            const res = await apiProtected('/repack/run', {
                 method: 'POST',
                 body: JSON.stringify({ schema, table, database: DbSelector.getSelected() }),
             });
+            this.trackJob(res.data?.jobId);
             showToast(`pg_repack started on ${tableName}`, 'success');
             setTimeout(() => this.loadRepack(), 1000);
         } catch (e) {
@@ -225,6 +230,7 @@ const VacuumMonitor = {
             await apiProtected('/repack/cancel', { method: 'POST' });
             showToast('repack cancelled', 'success');
             if (this._repackTimer) { clearInterval(this._repackTimer); this._repackTimer = null; }
+             this.renderJobStatus();
             setTimeout(() => this.loadRepack(), 500);
         } catch (e) {
             showToast(`cancel failed: ${e.message}`, 'error');
@@ -240,14 +246,42 @@ const VacuumMonitor = {
         }
 
         try {
-            await apiProtected('/vacuum/trigger', {
+            const res = await apiProtected('/vacuum/trigger', {
                 method: 'POST',
                 body: JSON.stringify({ schema, table, full, database: DbSelector.getSelected() })
             });
+            this.trackJob(res.data?.jobId);
             showToast(`${cmd} started on ${tableName}`, 'success');
             setTimeout(() => this.load(), 3000);
         } catch (e) {
             showToast(`vacuum failed: ${e.message}`, 'error');
         }
+    },
+
+    async renderJobStatus() {
+        const el = document.getElementById('vacuum-job-status');
+        if (!el) return;
+        if (!this._jobId) {
+            el.innerHTML = '';
+            return;
+        }
+        try {
+            const job = await JobUI.get(this._jobId);
+            el.innerHTML = renderJobSummary(job);
+            if (job.status !== 'running' && this._jobPoller) {
+                clearInterval(this._jobPoller);
+                this._jobPoller = null;
+            }
+        } catch (e) {
+            el.innerHTML = `<div class="card"><span class="mono-xs red">${escHtml(e.message)}</span></div>`;
+        }
+    },
+
+    trackJob(jobId) {
+        if (!jobId) return;
+        this._jobId = jobId;
+        this.renderJobStatus();
+        if (this._jobPoller) clearInterval(this._jobPoller);
+        this._jobPoller = setInterval(() => this.renderJobStatus(), 3000);
     },
 };

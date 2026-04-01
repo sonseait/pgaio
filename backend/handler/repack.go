@@ -18,6 +18,7 @@ import (
 
 type RepackHandler struct {
 	poolMgr *service.PoolManager
+	jobs    *service.JobStore
 
 	mu      sync.Mutex
 	running *repackJob
@@ -26,12 +27,13 @@ type RepackHandler struct {
 type repackJob struct {
 	Table     string    `json:"table"`
 	Database  string    `json:"database"`
+	JobID     string    `json:"jobId"`
 	StartedAt time.Time `json:"startedAt"`
 	cmd       *exec.Cmd
 }
 
-func NewRepackHandler(poolMgr *service.PoolManager) *RepackHandler {
-	return &RepackHandler{poolMgr: poolMgr}
+func NewRepackHandler(poolMgr *service.PoolManager, jobs *service.JobStore) *RepackHandler {
+	return &RepackHandler{poolMgr: poolMgr, jobs: jobs}
 }
 
 func (h *RepackHandler) getPool(r *http.Request) *pgxpool.Pool {
@@ -146,22 +148,35 @@ func (h *RepackHandler) Run(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cmd := exec.Command("pg_repack", args...)
+	cmd.Env = append(cmd.Environ(), "LD_LIBRARY_PATH=/opt/bitnami/postgresql/lib")
+	job := h.jobs.Start("repack", tableName, req.Database, "pg_repack queued", map[string]string{
+		"schema": req.Schema,
+		"table":  req.Table,
+	})
 
 	h.mu.Lock()
 	h.running = &repackJob{
 		Table:     tableName,
 		Database:  req.Database,
+		JobID:     job.ID,
 		StartedAt: time.Now(),
 		cmd:       cmd,
 	}
 	h.mu.Unlock()
 
 	go func() {
+		h.jobs.Update(job.ID, "pg_repack running", "")
 		log.Printf("[repack] starting pg_repack on %s (args: %s)", tableName, strings.Join(args, " "))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("[repack] ❌ pg_repack on %s failed: %v\nOutput: %s", tableName, err, string(output))
+			if current := h.jobs.Get(job.ID); current != nil && current.Status == service.JobStatusCanceled {
+				log.Printf("[repack] ⚠ pg_repack on %s cancelled\nOutput: %s", tableName, string(output))
+			} else {
+				h.jobs.Fail(job.ID, "pg_repack failed", string(output))
+				log.Printf("[repack] ❌ pg_repack on %s failed: %v\nOutput: %s", tableName, err, string(output))
+			}
 		} else {
+			h.jobs.Complete(job.ID, "pg_repack completed successfully")
 			log.Printf("[repack] ✅ pg_repack on %s completed\nOutput: %s", tableName, string(output))
 		}
 
@@ -173,6 +188,7 @@ func (h *RepackHandler) Run(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, model.APIResponse{
 		Success: true,
 		Data: map[string]string{
+			"jobId":   job.ID,
 			"message": fmt.Sprintf("pg_repack started on %s", tableName),
 			"status":  "running",
 		},
@@ -199,6 +215,7 @@ func (h *RepackHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 			"status":    "running",
 			"table":     job.Table,
 			"database":  job.Database,
+			"jobId":     job.JobID,
 			"startedAt": job.StartedAt,
 			"elapsed":   time.Since(job.StartedAt).Round(time.Second).String(),
 		},
@@ -222,6 +239,7 @@ func (h *RepackHandler) CancelRepack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	h.jobs.Cancel(job.JobID, "pg_repack cancelled")
 
 	h.mu.Lock()
 	h.running = nil

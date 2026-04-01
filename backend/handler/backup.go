@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"pgaio/model"
 	"pgaio/service"
@@ -10,6 +11,22 @@ import (
 
 type BackupHandler struct {
 	walg *service.WalG
+}
+
+func (h *BackupHandler) VerifyBackup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BackupName string `json:"backupName"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	resp, err := h.walg.VerifyBackup(r.Context(), strings.TrimSpace(req.BackupName))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, model.APIResponse{Success: true, Data: resp})
 }
 
 func NewBackupHandler(walg *service.WalG) *BackupHandler {

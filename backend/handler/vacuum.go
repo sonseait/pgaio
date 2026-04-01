@@ -15,10 +15,11 @@ import (
 
 type VacuumHandler struct {
 	poolMgr *service.PoolManager
+	jobs    *service.JobStore
 }
 
-func NewVacuumHandler(poolMgr *service.PoolManager) *VacuumHandler {
-	return &VacuumHandler{poolMgr: poolMgr}
+func NewVacuumHandler(poolMgr *service.PoolManager, jobs *service.JobStore) *VacuumHandler {
+	return &VacuumHandler{poolMgr: poolMgr, jobs: jobs}
 }
 
 func (h *VacuumHandler) getPool(r *http.Request) *pgxpool.Pool {
@@ -106,14 +107,21 @@ func (h *VacuumHandler) TriggerVacuum(w http.ResponseWriter, r *http.Request) {
 	if req.Full {
 		vacuumCmd = "VACUUM FULL ANALYZE"
 	}
+	job := h.jobs.Start("vacuum", tableName, req.Database, vacuumCmd+" queued", map[string]string{
+		"schema": req.Schema,
+		"table":  req.Table,
+	})
 
 	go func() {
+		h.jobs.Update(job.ID, vacuumCmd+" running", "")
 		log.Printf("[vacuum] starting %s on %s...", vacuumCmd, tableName)
 		sql := fmt.Sprintf("%s %s", vacuumCmd, tableName)
 		_, err := pool.Exec(context.Background(), sql)
 		if err != nil {
+			h.jobs.Fail(job.ID, vacuumCmd+" failed", err.Error())
 			log.Printf("[vacuum] %s on %s failed: %v", vacuumCmd, tableName, err)
 		} else {
+			h.jobs.Complete(job.ID, vacuumCmd+" completed")
 			log.Printf("[vacuum] ✅ %s on %s completed", vacuumCmd, tableName)
 		}
 	}()
@@ -121,6 +129,7 @@ func (h *VacuumHandler) TriggerVacuum(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, model.APIResponse{
 		Success: true,
 		Data: map[string]string{
+			"jobId":   job.ID,
 			"message": fmt.Sprintf("%s started on %s", vacuumCmd, tableName),
 			"status":  "running",
 		},

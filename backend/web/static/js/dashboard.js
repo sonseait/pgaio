@@ -5,10 +5,16 @@ const Dashboard = {
     _maxPoints: 40,
     _prevCommits: {},
     _prevRollbacks: {},
+    _prevTempBytes: null,
+    _prevTempFiles: null,
+    _prevSampleAt: null,
+    _prevDbCounters: {},
 
     render(container) {
         container.innerHTML = `
+            <div id="dashboard-warnings" class="mb-12"></div>
             <div class="grid grid-4 mb-12" id="stats-grid"></div>
+            <div id="dba-signals" class="mb-12"></div>
             <div class="grid grid-2 mb-12">
                 <div class="card">
                     <div class="card-title">transactions / interval</div>
@@ -34,7 +40,7 @@ const Dashboard = {
                 </div>
                 <div class="overflow-auto">
                     <table>
-                        <thead><tr><th>pid</th><th>user</th><th>db</th><th>state</th><th>dur</th><th>query</th><th></th></tr></thead>
+                        <thead><tr><th>pid</th><th>user</th><th>db</th><th>wait</th><th>dur</th><th>query</th><th></th></tr></thead>
                         <tbody id="queries-body"><tr><td colspan="7" class="text-center dim py-16">waiting...</td></tr></tbody>
                     </table>
                 </div>
@@ -43,6 +49,10 @@ const Dashboard = {
         this._data = [];
         this._prevCommits = {};
         this._prevRollbacks = {};
+        this._prevTempBytes = null;
+        this._prevTempFiles = null;
+        this._prevSampleAt = null;
+        this._prevDbCounters = {};
         this.loadInitialData();
         lucide.createIcons();
     },
@@ -61,6 +71,7 @@ const Dashboard = {
         const dbs = data.databases || [];
         const conn = data.connections || {};
         const act = data.activity || {};
+        const sampleAt = data.timestamp ? new Date(data.timestamp).getTime() : Date.now();
 
         // Aggregate TPS delta across all databases
         let totalCd = 0, totalRd = 0;
@@ -74,6 +85,43 @@ const Dashboard = {
             this._prevRollbacks[db.name] = db.txRollback || 0;
         });
 
+        let totalTempBytes = 0;
+        let totalTempFiles = 0;
+        dbs.forEach(db => {
+            totalTempBytes += db.tempBytes || 0;
+            totalTempFiles += db.tempFiles || 0;
+        });
+
+        let tempBytesRate = 0;
+        let tempFilesRate = 0;
+        let dbRates = [];
+        if (this._prevSampleAt && sampleAt > this._prevSampleAt) {
+            const seconds = (sampleAt - this._prevSampleAt) / 1000;
+            if (seconds > 0) {
+                tempBytesRate = Math.max(0, totalTempBytes - (this._prevTempBytes || 0)) / seconds;
+                tempFilesRate = Math.max(0, totalTempFiles - (this._prevTempFiles || 0)) / seconds;
+                dbRates = dbs.map(db => {
+                    const prev = this._prevDbCounters[db.name] || {};
+                    return {
+                        name: db.name,
+                        tempBytesRate: Math.max(0, (db.tempBytes || 0) - (prev.tempBytes || 0)) / seconds,
+                        tempFilesRate: Math.max(0, (db.tempFiles || 0) - (prev.tempFiles || 0)) / seconds,
+                        blksReadRate: Math.max(0, (db.blksRead || 0) - (prev.blksRead || 0)) / seconds,
+                    };
+                });
+            }
+        }
+        dbs.forEach(db => {
+            this._prevDbCounters[db.name] = {
+                tempBytes: db.tempBytes || 0,
+                tempFiles: db.tempFiles || 0,
+                blksRead: db.blksRead || 0,
+            };
+        });
+        this._prevTempBytes = totalTempBytes;
+        this._prevTempFiles = totalTempFiles;
+        this._prevSampleAt = sampleAt;
+
         this._data.push({
             time: now,
             commits: totalCd, rollbacks: totalRd,
@@ -84,6 +132,8 @@ const Dashboard = {
         if (this._data.length > this._maxPoints) this._data.shift();
 
         this.renderStats(data);
+        this.renderWarnings(data.collectionErrors || {});
+        this.renderDBASignals(data, { tempBytesRate, tempFilesRate, totalTempBytes, totalTempFiles, dbRates });
         this.renderTpsChart();
         this.renderConnChart();
         this.renderSystem(data.system);
@@ -123,17 +173,126 @@ const Dashboard = {
             <div class="card">
                 <div class="mono-xs dim">connections</div>
                 <div class="stat-val">${conn.usedConnections || 0}<span class="dim" style="font-size:12px">/${conn.maxConnections || 0}</span></div>
-                <div class="stat-label">${conn.availableConnections || 0} available</div>
+                <div class="stat-label">${conn.availableConnections || 0} app slots · ${conn.reservedConnections || 0} reserved</div>
             </div>
             <div class="card">
                 <div class="mono-xs dim">active queries</div>
                 <div class="stat-val accent">${act.activeQueries || 0}</div>
-                <div class="stat-label">${act.waitingQueries || 0} waiting · ${totalBackends} backends</div>
+                <div class="stat-label">${act.waitingQueries || 0} waiting · ${act.idleInTransaction || 0} idle in xact</div>
             </div>
             <div class="card">
                 <div class="mono-xs dim">deadlocks</div>
                 <div class="stat-val">${totalDeadlocks}</div>
-                <div class="stat-label">${totalConflicts} conflicts</div>
+                <div class="stat-label">${totalConflicts} conflicts · ${totalBackends} backends</div>
+            </div>
+        `;
+    },
+
+    renderDBASignals(data, signals) {
+        const el = document.getElementById('dba-signals');
+        if (!el) return;
+        const act = data.activity || {};
+        const waits = act.waitEvents || [];
+        const wal = data.wal || {};
+        const bgwriter = data.bgwriter || {};
+        const topWaits = waits.length ? `
+            <table class="data-table" style="table-layout:fixed;width:100%">
+                <thead><tr><th>type</th><th>event</th><th style="width:60px">count</th></tr></thead>
+                <tbody>${waits.map(item => `
+                    <tr>
+                        <td class="mono-xs dim">${escHtml(item.type || '-')}</td>
+                        <td class="mono-xs">${escHtml(item.event || '-')}</td>
+                        <td>${item.count || 0}</td>
+                    </tr>
+                `).join('')}</tbody>
+            </table>
+        ` : '<div class="mono-xs green">no wait events on active backends</div>';
+
+        const spillHotspots = (signals.dbRates || [])
+            .filter(item => item.tempBytesRate > 0 || item.blksReadRate > 0)
+            .sort((a, b) => (b.tempBytesRate + b.blksReadRate * 8192) - (a.tempBytesRate + a.blksReadRate * 8192))
+            .slice(0, 4);
+        const hotspots = spillHotspots.length ? `
+            <table class="data-table" style="table-layout:fixed;width:100%">
+                <thead><tr><th>db</th><th>temp/s</th><th>reads/s</th></tr></thead>
+                <tbody>${spillHotspots.map(item => `
+                    <tr>
+                        <td>${escHtml(item.name)}</td>
+                        <td class="mono-xs ${item.tempBytesRate > 10 * 1024 * 1024 ? 'yellow' : 'dim'}">${formatBytes(item.tempBytesRate)}/s</td>
+                        <td class="mono-xs dim">${fmtNum(item.blksReadRate)}/s</td>
+                    </tr>
+                `).join('')}</tbody>
+            </table>
+        ` : '<div class="mono-xs green">no spill or read hotspots yet</div>';
+
+        const checkpointPressure = (bgwriter.buffersBackend || 0) > 0
+            ? ((bgwriter.buffersBackend || 0) / Math.max((bgwriter.buffersBackend || 0) + (bgwriter.buffersClean || 0) + (bgwriter.buffersCheckpoint || 0), 1) * 100)
+            : 0;
+
+        el.innerHTML = `
+            <div class="grid grid-4" style="gap:12px">
+                <div class="card">
+                    <div class="card-title">long-running active</div>
+                    <div class="stat-val ${act.longRunningQueries > 0 ? 'yellow' : 'green'}">${act.longRunningQueries || 0}</div>
+                    <div class="stat-label">oldest ${formatDuration(act.oldestQueryMs || 0)} · ${act.waitingQueries || 0} waiting</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">idle in xact</div>
+                    <div class="stat-val ${act.idleInTransaction > 0 ? 'yellow' : 'green'}">${act.idleInTransaction || 0}</div>
+                    <div class="stat-label">oldest ${formatDuration(act.oldestIdleInXactMs || 0)}</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">temp spill rate</div>
+                    <div class="stat-val ${signals.tempBytesRate > 10 * 1024 * 1024 ? 'yellow' : 'accent'}">${formatBytes(signals.tempBytesRate)}/s</div>
+                    <div class="stat-label">${signals.tempFilesRate.toFixed(2)} files/s · ${formatBytes(signals.totalTempBytes || 0)} total</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">wal rate</div>
+                    <div class="stat-val ${wal.bytesPerSec > 16 * 1024 * 1024 ? 'yellow' : 'accent'}">${formatBytes(wal.bytesPerSec || 0)}/s</div>
+                    <div class="stat-label">${(wal.segmentsPerHour || 0).toFixed(2)} seg/h · ${escHtml(wal.currentLsn || '-')}</div>
+                </div>
+            </div>
+            <div class="grid grid-3" style="gap:12px;margin-top:12px">
+                <div class="card">
+                    <div class="card-title">top wait events</div>
+                    <div class="overflow-auto" style="max-height:150px">${topWaits}</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">checkpoint pressure</div>
+                    <div class="stat-val ${checkpointPressure > 25 ? 'yellow' : 'green'}">${checkpointPressure.toFixed(1)}%</div>
+                    <div class="stat-label">${bgwriter.checkpointsRequested || 0} req · ${(bgwriter.checkpointWriteMs || 0).toFixed(0)} ms write · ${(bgwriter.checkpointSyncMs || 0).toFixed(0)} ms sync</div>
+                    <div class="mono-xs dim" style="margin-top:8px">
+                        backend writes ${fmtNum(bgwriter.buffersBackend || 0)} · checkpoint ${fmtNum(bgwriter.buffersCheckpoint || 0)} · bgwriter ${fmtNum(bgwriter.buffersClean || 0)}
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">db hotspots</div>
+                    <div class="overflow-auto" style="max-height:150px">${hotspots}</div>
+                </div>
+            </div>
+        `;
+    },
+
+    renderWarnings(errors) {
+        const el = document.getElementById('dashboard-warnings');
+        if (!el) return;
+        const entries = Object.entries(errors || {});
+        if (!entries.length) {
+            el.innerHTML = '';
+            return;
+        }
+        el.innerHTML = `
+            <div class="card" style="border-color:var(--yellow);background:rgba(234,163,40,0.06)">
+                <div class="card-title" style="color:var(--yellow)">partial collector failures</div>
+                <div class="mono-xs dim" style="margin-top:6px">Some dashboard sections are stale or incomplete:</div>
+                <div style="margin-top:8px;display:grid;gap:6px">
+                    ${entries.map(([key, value]) => `
+                        <div class="mono-xs">
+                            <span class="yellow">${escHtml(key)}</span>
+                            <span class="dim">· ${escHtml(value)}</span>
+                        </div>
+                    `).join('')}
+                </div>
             </div>
         `;
     },
@@ -348,12 +507,11 @@ const Dashboard = {
         }
 
         tbody.innerHTML = q.map(r => {
-            const stBadge = r.state === 'active' ? 'badge-green' : r.state === 'idle in transaction' ? 'badge-yellow' : 'badge-gray';
             return `<tr>
                 <td>${r.pid}</td>
                 <td>${r.user}</td>
                 <td>${r.database}</td>
-                <td><span class="badge ${stBadge}">${r.state}</span></td>
+                <td><span class="mono-xs ${r.waitEvent ? 'yellow' : 'dim'}">${escHtml(r.waitEvent || '-')}</span></td>
                 <td>${formatDuration(r.duration)}</td>
                 <td class="truncate" title="${escHtml(r.query)}">${escHtml(r.query)}</td>
                 <td>

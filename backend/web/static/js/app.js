@@ -267,6 +267,141 @@ function escHtml(s) {
     if (!s) return '';
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+function jobStatusClass(status) {
+    switch (status) {
+        case 'succeeded': return 'green';
+        case 'failed': return 'red';
+        case 'canceled': return 'yellow';
+        default: return 'accent';
+    }
+}
+
+function renderJobSummary(job, { showDownload = false } = {}) {
+    if (!job) return '<span class="mono-xs dim">no recent job</span>';
+    const statusCls = jobStatusClass(job.status);
+    const finished = job.finishedAt ? ` · finished ${timeAgo(job.finishedAt)}` : '';
+    const detail = job.details ? `<div class="mono-xs dim" style="margin-top:4px;white-space:pre-wrap">${escHtml(job.details)}</div>` : '';
+    const artifact = showDownload && job.status === 'succeeded' && job.artifact
+        ? `<button class="btn btn-sm" onclick="JobUI.download('${job.id}')" style="font-size:9px;margin-left:8px">download</button>`
+        : '';
+    return `
+        <div class="card" style="padding:8px 12px">
+            <div class="flex-between" style="gap:12px">
+                <div>
+                    <span class="mono-xs ${statusCls}">${escHtml(job.type)} ${escHtml(job.status)}</span>
+                    <span class="mono-xs dim">${escHtml(job.message || job.target || '')}${finished}</span>
+                </div>
+                ${artifact}
+            </div>
+            ${detail}
+        </div>
+    `;
+}
+
+const JobUI = {
+    async get(jobId) {
+        const res = await apiProtected(`/jobs/${encodeURIComponent(jobId)}`);
+        return res.data;
+    },
+
+    async download(jobId) {
+        const doDownload = async (sid) => {
+            const res = await fetch(`${API_BASE}/jobs/${encodeURIComponent(jobId)}/download`, {
+                headers: { 'X-Session-ID': sid },
+            });
+            if (res.status === 401) {
+                sessionStorage.removeItem('pgaio_session');
+                showLoginModal((newSid) => doDownload(newSid));
+                return;
+            }
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ error: res.statusText }));
+                throw new Error(err.error || res.statusText);
+            }
+
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'artifact.bin';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+
+        try {
+            const sid = sessionStorage.getItem('pgaio_session');
+            if (sid) await doDownload(sid);
+            else showLoginModal((newSid) => doDownload(newSid));
+        } catch (e) {
+            showToast(`download failed: ${e.message}`, 'error');
+        }
+    },
+};
+
+const ProfileSelector = {
+    _settings: null,
+
+    async _loadSettings() {
+        if (this._settings) return this._settings;
+        const res = await api('/settings');
+        this._settings = res.data || {};
+        return this._settings;
+    },
+
+    async getProfiles() {
+        const settings = await this._loadSettings();
+        const profiles = settings.connections?.profiles || [];
+        return profiles.filter(p => p.enabled);
+    },
+
+    async getDefault(feature) {
+        const settings = await this._loadSettings();
+        return settings.connections?.featureRoutes?.[feature] || 'direct-postgres';
+    },
+
+    getSelected(feature) {
+        return sessionStorage.getItem(`pgaio_profile_${feature}`) || '';
+    },
+
+    setSelected(feature, profile) {
+        sessionStorage.setItem(`pgaio_profile_${feature}`, profile);
+    },
+
+    async ensureSelected(feature) {
+        const selected = this.getSelected(feature);
+        if (selected) return selected;
+        const fallback = await this.getDefault(feature);
+        this.setSelected(feature, fallback);
+        return fallback;
+    },
+
+    async renderInto(container, feature, onChange) {
+        if (!container) return;
+        const profiles = await this.getProfiles();
+        const selected = await this.ensureSelected(feature);
+        container.innerHTML = `
+            <select class="db-select" title="connection profile">
+                ${profiles.map(p => `<option value="${escHtml(p.name)}" ${p.name === selected ? 'selected' : ''}>${escHtml(p.label || p.name)}</option>`).join('')}
+            </select>
+        `;
+        const select = container.querySelector('select');
+        if (!select) return;
+        select.addEventListener('change', (e) => {
+            this.setSelected(feature, e.target.value);
+            if (onChange) onChange(e.target.value);
+        });
+    },
+
+    getParam(feature) {
+        const selected = this.getSelected(feature);
+        return selected ? `&profile=${encodeURIComponent(selected)}` : '';
+    },
+
+    resetCache() {
+        this._settings = null;
+    },
+};
 // ========================
 // Database Selector
 // ========================
@@ -365,6 +500,22 @@ const pages = {
         title: 'backups', sub: 'wal-g backup & restore',
         render: (el) => { if (typeof Backup !== 'undefined') Backup.render(el); },
     },
+    jobs: {
+        title: 'job center', sub: 'background operations & artifacts',
+        render: (el) => { if (typeof JobsPage !== 'undefined') JobsPage.render(el); },
+    },
+    planner: {
+        title: 'maintenance planner', sub: 'actionable table and index recommendations',
+        render: (el) => { if (typeof MaintenancePlanner !== 'undefined') MaintenancePlanner.render(el); },
+    },
+    profiles: {
+        title: 'connection profiles', sub: 'feature routing between direct postgres and pgbouncer',
+        render: (el) => { if (typeof ProfilesPage !== 'undefined') ProfilesPage.render(el); },
+    },
+    drift: {
+        title: 'schema drift', sub: 'compare object drift between databases',
+        render: (el) => { if (typeof SchemaDriftPage !== 'undefined') SchemaDriftPage.render(el); },
+    },
     s3: {
         title: 's3 browser', sub: 'browse backup storage',
         render: (el) => { if (typeof S3Browser !== 'undefined') S3Browser.render(el); },
@@ -403,8 +554,12 @@ const pages = {
         render: (el) => { if (typeof VacuumMonitor !== 'undefined') VacuumMonitor.render(el); },
     },
     locks: {
-        title: 'lock monitor', sub: 'real-time lock conflicts',
+        title: 'lock monitor', sub: 'conflicts and blocking chains',
         render: (el) => { if (typeof LockMonitor !== 'undefined') LockMonitor.render(el); },
+    },
+    roles: {
+        title: 'roles & privileges', sub: 'role graph, grants, default privileges',
+        render: (el) => { if (typeof RolesPage !== 'undefined') RolesPage.render(el); },
     },
     indexes: {
         title: 'index advisor', sub: 'missing, unused & duplicate',

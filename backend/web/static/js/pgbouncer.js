@@ -12,6 +12,14 @@ const PgBouncerUI = {
                     <button onclick="PgBouncerUI.action('kill')" class="btn btn-sm btn-danger"><i data-lucide="x" class="icon-sm"></i> kill</button>
                 </div>
             </div>
+            <div class="card mb-12" style="padding:8px 12px;background:var(--bg-2)">
+                <div class="mono-xs dim" style="line-height:1.6">
+                    transaction pooling note:
+                    if clients send unsupported startup parameters such as <span class="accent">statement_timeout</span>,
+                    keep the real timeout on PostgreSQL with <span class="accent">ALTER ROLE</span> / <span class="accent">ALTER DATABASE</span>,
+                    and use <span class="accent">ignore_startup_parameters</span> in PgBouncer only for compatibility.
+                </div>
+            </div>
             <div class="grid grid-2 mb-12">
                 <div class="card">
                     <div class="card-title">pool stats</div>

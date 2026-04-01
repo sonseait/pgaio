@@ -1,12 +1,16 @@
 // PGAIO — Slow Queries + Explain Analyze
 
 const SlowQueries = {
+    _savedPlans: [],
+    _compare: [],
+
     async render(container) {
         container.innerHTML = `
             <div class="flex-between mb-8">
                 <div style="display:flex;gap:8px;align-items:center">
                     <span class="card-title" style="margin:0">slow queries</span>
                     <div id="queries-db-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
+                    <div id="queries-profile-sel" class="db-bar" style="display:inline-flex;margin:0"></div>
                 </div>
                 <div style="display:flex;gap:6px">
                     <button onclick="SlowQueries.resetStats()" class="btn btn-sm btn-danger" title="Reset statistics">
@@ -15,19 +19,30 @@ const SlowQueries = {
                     <button onclick="SlowQueries.load()" class="btn btn-sm"><i data-lucide="refresh-cw" class="icon-sm"></i> refresh</button>
                 </div>
             </div>
+            <div id="queries-plans" class="mb-8"></div>
             <div id="queries-content"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
         `;
         lucide.createIcons();
         await DbSelector.renderInto(document.getElementById('queries-db-sel'), () => this.load());
+        await ProfileSelector.renderInto(document.getElementById('queries-profile-sel'), 'queries', () => this.load());
         await this.load();
     },
 
     async load() {
         try {
-            const res = await api('/queries/slow' + DbSelector.getParam());
+            const params = new URLSearchParams();
+            if (DbSelector.getSelected()) params.set('database', DbSelector.getSelected());
+            const profile = await ProfileSelector.ensureSelected('queries');
+            if (profile) params.set('profile', profile);
+            const [res, plansRes] = await Promise.all([
+                api(`/queries/slow?${params.toString()}`),
+                api('/queries/plans'),
+            ]);
             const d = res.data;
+            this._savedPlans = plansRes.data || [];
             const el = document.getElementById('queries-content');
             if (!el) return;
+            this.renderSavedPlans();
 
             if (!d.available) {
                 el.innerHTML = `<div class="card"><span class="yellow mono-xs">⚠ ${d.message}</span></div>`;
@@ -75,6 +90,33 @@ const SlowQueries = {
     },
 
     _queries: [],
+    renderSavedPlans() {
+        const el = document.getElementById('queries-plans');
+        if (!el) return;
+        if (!this._savedPlans.length) {
+            el.innerHTML = '';
+            return;
+        }
+        el.innerHTML = `
+            <div class="card">
+                <div class="flex-between" style="margin-bottom:8px">
+                    <span class="card-title" style="margin:0">saved plans</span>
+                    <button class="btn btn-sm" style="font-size:9px" onclick="SlowQueries.compareSelected()">compare selected</button>
+                </div>
+                <div style="display:grid;gap:8px">
+                    ${this._savedPlans.slice(0, 8).map(plan => `
+                        <label class="mono-xs" style="display:flex;align-items:flex-start;gap:8px">
+                            <input type="checkbox" ${this._compare.includes(plan.id) ? 'checked' : ''} onchange="SlowQueries.toggleCompare('${plan.id}', this.checked)">
+                            <span>
+                                <span class="${plan.mode === 'analyzed' ? 'green' : 'yellow'}">${escHtml(plan.name || plan.id)}</span>
+                                <span class="dim">${escHtml(plan.database || '-')} · ${escHtml(plan.profile || 'direct')} · ${timeAgo(plan.createdAt)}</span>
+                            </span>
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    },
 
     async explain(index) {
         const q = this._queries[index];
@@ -98,6 +140,7 @@ const SlowQueries = {
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <button class="btn btn-sm btn-primary" id="explain-save-btn">save plan</button>
                     <button class="btn btn-sm" id="explain-close-btn">close</button>
                 </div>
             </div>
@@ -110,9 +153,10 @@ const SlowQueries = {
         overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
 
         try {
+            const profile = await ProfileSelector.ensureSelected('queries');
             const res = await apiProtected('/queries/explain', {
                 method: 'POST',
-                body: JSON.stringify({ query: q.query, database: DbSelector.getSelected() })
+                body: JSON.stringify({ query: q.query, database: DbSelector.getSelected(), profile })
             });
             const { mode, plan } = res.data || {};
             const resultEl = document.getElementById('explain-result');
@@ -125,6 +169,24 @@ const SlowQueries = {
                     padding:12px;border-radius:4px;overflow:auto;max-height:400px;white-space:pre-wrap;
                     font-size:10px;line-height:1.5">${escHtml(planStr)}</pre>`;
             }
+            document.getElementById('explain-save-btn').addEventListener('click', async () => {
+                try {
+                    const saveRes = await apiProtected('/queries/explain', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            query: q.query,
+                            database: DbSelector.getSelected(),
+                            profile,
+                            save: true,
+                            name: q.query.slice(0, 60),
+                        })
+                    });
+                    showToast(`plan saved as ${saveRes.data?.planId}`, 'success');
+                    await this.load();
+                } catch (e) {
+                    showToast(`save failed: ${e.message}`, 'error');
+                }
+            });
         } catch (e) {
             const resultEl = document.getElementById('explain-result');
             if (resultEl) resultEl.innerHTML = `<span class="red mono-xs">error: ${escHtml(e.message)}</span>`;
@@ -134,9 +196,61 @@ const SlowQueries = {
     async resetStats() {
         if (!await showConfirm('reset statistics', 'Reset pg_stat_statements? This clears all query statistics.', { danger: true, confirmText: 'reset' })) return;
         try {
-            await apiProtected('/queries/reset' + DbSelector.getParam(), { method: 'POST' });
+            const params = new URLSearchParams();
+            if (DbSelector.getSelected()) params.set('database', DbSelector.getSelected());
+            const profile = await ProfileSelector.ensureSelected('queries');
+            if (profile) params.set('profile', profile);
+            await apiProtected('/queries/reset?' + params.toString(), { method: 'POST' });
             showToast('statistics reset', 'success');
             await this.load();
         } catch (e) { /* handled */ }
+    },
+
+    toggleCompare(id, checked) {
+        if (checked) {
+            if (this._compare.length >= 2) this._compare.shift();
+            this._compare.push(id);
+        } else {
+            this._compare = this._compare.filter(x => x !== id);
+        }
+        this.renderSavedPlans();
+    },
+
+    async compareSelected() {
+        if (this._compare.length !== 2) {
+            showToast('select exactly two saved plans', 'error');
+            return;
+        }
+        const [a, b] = await Promise.all(this._compare.map(id => api(`/queries/plans/${encodeURIComponent(id)}`)));
+        const left = a.data;
+        const right = b.data;
+
+        document.getElementById('plan-compare-modal')?.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'plan-compare-modal';
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal-dialog" style="width:920px;max-height:84vh">
+                <div class="modal-header">
+                    <span class="modal-title">compare saved plans</span>
+                    <button class="modal-close" id="plan-compare-close">&times;</button>
+                </div>
+                <div class="modal-body" style="max-height:70vh;overflow:auto">
+                    <div class="grid grid-2" style="gap:12px">
+                        ${[left, right].map(plan => `
+                            <div class="card">
+                                <div class="mono-xs ${plan.mode === 'analyzed' ? 'green' : 'yellow'}" style="margin-bottom:6px">${escHtml(plan.name || plan.id)}</div>
+                                <div class="mono-xs dim" style="margin-bottom:8px">${escHtml(plan.database || '-')} · ${escHtml(plan.profile || 'direct')} · ${timeAgo(plan.createdAt)}</div>
+                                <div class="mono-xs dim" style="margin-bottom:8px;white-space:pre-wrap">${escHtml(plan.query)}</div>
+                                <pre class="mono-xs" style="background:var(--bg-0);border:1px solid var(--border);padding:8px;border-radius:4px;white-space:pre-wrap">${escHtml(JSON.stringify(plan.plan, null, 2))}</pre>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        document.getElementById('plan-compare-close').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     },
 };

@@ -16,26 +16,30 @@ import (
 type Server struct {
 	mux *http.ServeMux
 
-	dashboard *handler.DashboardHandler
-	backup    *handler.BackupHandler
-	s3        *handler.S3Handler
-	pgbouncer *handler.PgBouncerHandler
-	logs      *handler.LogHandler
-	config    *handler.ConfigHandler
-	overview  *handler.ServerOverviewHandler
-	sql       *handler.SQLHandler
-	auth      *handler.AuthHandler
-	settings  *handler.SettingsHandler
-	queries   *handler.QueriesHandler
+	dashboard   *handler.DashboardHandler
+	backup      *handler.BackupHandler
+	s3          *handler.S3Handler
+	pgbouncer   *handler.PgBouncerHandler
+	logs        *handler.LogHandler
+	config      *handler.ConfigHandler
+	overview    *handler.ServerOverviewHandler
+	sql         *handler.SQLHandler
+	auth        *handler.AuthHandler
+	settings    *handler.SettingsHandler
+	queries     *handler.QueriesHandler
+	maintenance *handler.MaintenanceHandler
+	schema      *handler.SchemaHandler
 
 	vacuum     *handler.VacuumHandler
 	locks      *handler.LocksHandler
+	roles      *handler.RolesHandler
 	indexes    *handler.IndexesHandler
 	extensions *handler.ExtensionsHandler
 	alerts     *handler.AlertsHandler
 	database   *handler.DatabaseHandler
 	tuner      *handler.TunerHandler
 	repack     *handler.RepackHandler
+	jobs       *handler.JobsHandler
 	totp       *service.TOTP
 }
 
@@ -48,33 +52,39 @@ func New(
 	logPath string,
 	pool *pgxpool.Pool,
 	poolMgr *service.PoolManager,
+	jobs *service.JobStore,
+	plans *service.PlanStore,
 	totpSvc *service.TOTP,
 	configStore *service.ConfigStore,
 	scheduler *service.Scheduler,
 	alerter *service.Alerter,
 ) *Server {
 	s := &Server{
-		mux:       http.NewServeMux(),
-		dashboard: handler.NewDashboardHandler(monitor),
-		backup:    handler.NewBackupHandler(walg),
-		s3:        handler.NewS3Handler(s3Client),
-		pgbouncer: handler.NewPgBouncerHandler(pgbouncer),
-		logs:      handler.NewLogHandler(logPath),
-		config:    handler.NewConfigHandler(pool),
-		overview:  handler.NewServerOverviewHandler(poolMgr),
-		sql:       handler.NewSQLHandler(poolMgr),
-		auth:      handler.NewAuthHandler(totpSvc),
-		settings:  handler.NewSettingsHandler(configStore, scheduler),
-		queries:   handler.NewQueriesHandler(poolMgr),
+		mux:         http.NewServeMux(),
+		dashboard:   handler.NewDashboardHandler(monitor),
+		backup:      handler.NewBackupHandler(walg),
+		s3:          handler.NewS3Handler(s3Client),
+		pgbouncer:   handler.NewPgBouncerHandler(pgbouncer),
+		logs:        handler.NewLogHandler(logPath),
+		config:      handler.NewConfigHandler(pool),
+		overview:    handler.NewServerOverviewHandler(poolMgr),
+		sql:         handler.NewSQLHandler(poolMgr),
+		auth:        handler.NewAuthHandler(totpSvc),
+		settings:    handler.NewSettingsHandler(configStore, scheduler),
+		queries:     handler.NewQueriesHandler(poolMgr, plans),
+		maintenance: handler.NewMaintenanceHandler(poolMgr),
+		schema:      handler.NewSchemaHandler(poolMgr),
 
-		vacuum:     handler.NewVacuumHandler(poolMgr),
+		vacuum:     handler.NewVacuumHandler(poolMgr, jobs),
 		locks:      handler.NewLocksHandler(pool),
+		roles:      handler.NewRolesHandler(pool),
 		indexes:    handler.NewIndexesHandler(poolMgr),
 		extensions: handler.NewExtensionsHandler(poolMgr),
 		alerts:     handler.NewAlertsHandler(alerter),
-		database:   handler.NewDatabaseHandler(pool),
+		database:   handler.NewDatabaseHandler(pool, jobs),
 		tuner:      handler.NewTunerHandler(service.NewTuner(pool), pool, pgbouncer),
-		repack:     handler.NewRepackHandler(poolMgr),
+		repack:     handler.NewRepackHandler(poolMgr, jobs),
+		jobs:       handler.NewJobsHandler(jobs),
 		totp:       totpSvc,
 	}
 	s.routes()
@@ -108,6 +118,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/backups", s.backup.ListBackups)
 	s.mux.HandleFunc("POST /api/backups/trigger", s.protect(s.backup.TriggerBackup))
 	s.mux.HandleFunc("POST /api/backups/restore", s.protect(s.backup.RestoreBackup))
+	s.mux.HandleFunc("POST /api/backups/verify", s.protect(s.backup.VerifyBackup))
 
 	// S3
 	s.mux.HandleFunc("GET /api/s3/objects", s.s3.ListObjects)
@@ -144,6 +155,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/queries/slow", s.queries.GetSlowQueries)
 	s.mux.HandleFunc("POST /api/queries/explain", s.protect(s.queries.ExplainQuery))
 	s.mux.HandleFunc("POST /api/queries/reset", s.protect(s.queries.ResetStats))
+	s.mux.HandleFunc("GET /api/queries/plans", s.queries.ListPlans)
+	s.mux.HandleFunc("GET /api/queries/plans/{id}", s.queries.GetPlan)
+
+	// Maintenance Planner
+	s.mux.HandleFunc("GET /api/maintenance/plan", s.maintenance.GetPlan)
+	s.mux.HandleFunc("GET /api/schema/drift", s.schema.GetDrift)
 
 	// Vacuum + Bloat
 	s.mux.HandleFunc("GET /api/vacuum/stats", s.vacuum.GetVacuumStats)
@@ -158,6 +175,10 @@ func (s *Server) routes() {
 
 	// Locks
 	s.mux.HandleFunc("GET /api/locks", s.locks.GetLocks)
+	s.mux.HandleFunc("GET /api/locks/tree", s.locks.GetLockTree)
+
+	// Roles / Privileges
+	s.mux.HandleFunc("GET /api/roles/overview", s.roles.GetOverview)
 
 	// Index Advisor
 	s.mux.HandleFunc("GET /api/indexes/advice", s.indexes.GetIndexAdvice)
@@ -171,6 +192,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/database/export", s.protect(s.database.ExportDatabase))
 	s.mux.HandleFunc("POST /api/database/import", s.protect(s.database.ImportDatabase))
 	s.mux.HandleFunc("GET /api/database/list", s.database.ListDatabases)
+
+	// Jobs
+	s.mux.HandleFunc("GET /api/jobs", s.jobs.ListJobs)
+	s.mux.HandleFunc("GET /api/jobs/{id}", s.jobs.GetJob)
+	s.mux.HandleFunc("GET /api/jobs/{id}/download", s.protect(s.jobs.DownloadArtifact))
 
 	// Alerts
 	s.mux.HandleFunc("GET /api/alerts", s.alerts.GetAlerts)

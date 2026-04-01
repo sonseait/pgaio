@@ -8,6 +8,8 @@ const AlertsPage = {
                 <button onclick="AlertsPage.save()" class="btn btn-sm btn-primary"><i data-lucide="save" class="icon-sm"></i> save</button>
             </div>
             <div id="alerts-settings"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
+            <div class="card-title" style="margin-top:16px">active alerts</div>
+            <div id="alerts-active"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
             <div class="card-title" style="margin-top:16px">alert history</div>
             <div id="alerts-history"><div class="card"><span class="dim mono-xs">loading...</span></div></div>
         `;
@@ -24,6 +26,7 @@ const AlertsPage = {
             this._config = settingsRes.data;
             this._alerts = alertsRes.data;
             this.renderSettings();
+            this.renderActive();
             this.renderHistory();
         } catch (e) { /* handled */ }
     },
@@ -41,6 +44,7 @@ const AlertsPage = {
                         <input type="checkbox" id="alert-enabled" ${a.enabled ? 'checked' : ''}>
                         <span>enable alerting</span>
                     </label>
+                    ${this.thresholdInput('cooldown (min)', 'alert-cooldown', a.cooldownMinutes || 15, 0, 1440)}
                 </div>
                 <div class="card mt-2">
                     <div class="card-title">telegram</div>
@@ -65,12 +69,36 @@ const AlertsPage = {
         `;
     },
 
-    thresholdInput(label, id, value) {
+    thresholdInput(label, id, value, min = 0, max = 100) {
         return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <span class="mono-xs dim">${label}</span>
-            <input type="number" id="${id}" value="${value}" min="0" max="100"
+            <input type="number" id="${id}" value="${value}" min="${min}" max="${max}"
                 style="width:60px;background:var(--bg-0);border:1px solid var(--border);color:var(--text-1);
                 padding:2px 4px;font-size:11px;font-family:var(--font);text-align:right">
+        </div>`;
+    },
+
+    renderActive() {
+        const el = document.getElementById('alerts-active');
+        if (!el || !this._alerts) return;
+        const active = (this._alerts.active || []).filter(a => a.status === 'open');
+        if (!active.length) {
+            el.innerHTML = '<div class="card"><span class="dim mono-xs">no open alerts</span></div>';
+            return;
+        }
+        el.innerHTML = `<div class="grid-3" style="gap:8px">
+            ${active.map(a => `
+                <div class="card">
+                    <div class="flex-between" style="gap:12px">
+                        <span class="mono-xs ${a.level === 'critical' ? 'red' : 'yellow'}">${escHtml(a.metric)}</span>
+                        <span class="mono-xs dim">x${a.count || 1}</span>
+                    </div>
+                    <div class="mono-xs" style="margin-top:6px">${escHtml(a.message || '')}</div>
+                    <div class="mono-xs dim" style="margin-top:6px">opened ${a.openedAt ? timeAgo(a.openedAt) : '-'}</div>
+                    <div class="mono-xs dim">last seen ${a.lastSeenAt ? timeAgo(a.lastSeenAt) : '-'}</div>
+                    <div class="mono-xs dim">value ${escHtml(a.value || '-')}</div>
+                </div>
+            `).join('')}
         </div>`;
     },
 
@@ -90,7 +118,7 @@ const AlertsPage = {
                 <th style="width:100px">metric</th><th>message</th>
             </tr></thead><tbody>${history.map(e => `<tr>
                 <td class="dim">${new Date(e.time).toLocaleString()}</td>
-                <td class="${e.level === 'critical' ? 'red' : 'yellow'}">${e.level}</td>
+                <td class="${e.level === 'critical' ? 'red' : (e.level === 'resolved' ? 'green' : 'yellow')}">${e.level}</td>
                 <td>${e.metric}</td>
                 <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(e.message)}</td>
             </tr>`).join('')}</tbody></table></div>`;
@@ -110,10 +138,12 @@ const AlertsPage = {
                 replicationLagSec: parseInt(document.getElementById('alert-repl')?.value) || 30,
                 backupMaxAgeHours: parseInt(document.getElementById('alert-bkp')?.value) || 24,
             },
+            cooldownMinutes: parseInt(document.getElementById('alert-cooldown')?.value) || 15,
         };
         try {
             await apiProtected('/settings', { method: 'POST', body: JSON.stringify(this._config) });
             showToast('settings saved', 'success');
+            await this.load();
         } catch (e) { /* handled */ }
     },
 

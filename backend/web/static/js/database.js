@@ -1,11 +1,16 @@
 // PGAIO — Database Export / Import
 
 const DatabaseIO = {
+    _exportJobId: null,
+    _importJobId: null,
+    _poller: null,
+
     async render(container) {
         container.innerHTML = `
             <div class="flex-between mb-8">
                 <span class="card-title" style="margin:0">database export / import</span>
             </div>
+            <div class="mb-8" id="dbio-job-status"></div>
 
             <!-- Export Card -->
             <div class="card mb-8">
@@ -105,6 +110,7 @@ const DatabaseIO = {
         lucide.createIcons();
         this._setupDropzone();
         await this._loadDatabases();
+        this.renderJobStatus();
     },
 
     async _loadDatabases() {
@@ -154,7 +160,7 @@ const DatabaseIO = {
 
         const doExport = async (sid) => {
             try {
-                showToast('preparing download...', 'info');
+                showToast('starting export...', 'info');
                 const res = await fetch(`${API_BASE}/database/export?database=${encodeURIComponent(db)}&format=${format}&dataOnly=${dataOnly}`, {
                     headers: { 'X-Session-ID': sid },
                 });
@@ -164,14 +170,10 @@ const DatabaseIO = {
                     return;
                 }
                 if (!res.ok) throw new Error('export failed: ' + res.statusText);
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || `${db}.dump`;
-                a.click();
-                URL.revokeObjectURL(url);
-                showToast('download started', 'success');
+                const data = await res.json();
+                this._exportJobId = data.data?.jobId || null;
+                this.trackJobs();
+                showToast('export started', 'success');
             } catch (e) {
                 showToast('export failed: ' + e.message, 'error');
             }
@@ -226,8 +228,10 @@ const DatabaseIO = {
                     throw new Error(err.error || res.statusText);
                 }
                 const data = await res.json();
+                this._importJobId = data.data?.jobId || null;
+                this.trackJobs();
                 statusEl.innerHTML = `<span class="mono-xs green">✓ ${escHtml(data.data?.message || 'import started')}</span>`;
-                showToast('import started — check logs for progress', 'success');
+                showToast('import started', 'success');
             } catch (e) {
                 statusEl.innerHTML = `<span class="mono-xs red">✗ ${escHtml(e.message)}</span>`;
                 showToast('import failed: ' + e.message, 'error');
@@ -237,5 +241,46 @@ const DatabaseIO = {
         const sid = sessionStorage.getItem('pgaio_session');
         if (sid) { doImport(sid); }
         else { showLoginModal((newSid) => doImport(newSid), () => { statusEl.innerHTML = ''; }); }
+    },
+
+    async renderJobStatus() {
+        const el = document.getElementById('dbio-job-status');
+        if (!el) return;
+
+        const ids = [this._exportJobId, this._importJobId].filter(Boolean);
+        if (!ids.length) {
+            el.innerHTML = '';
+            return;
+        }
+
+        const parts = [];
+        for (const id of ids) {
+            try {
+                const job = await JobUI.get(id);
+                parts.push(renderJobSummary(job, { showDownload: job.type === 'export' }));
+            } catch (e) {
+                parts.push(`<div class="card"><span class="mono-xs red">${escHtml(e.message)}</span></div>`);
+            }
+        }
+        el.innerHTML = parts.join('');
+    },
+
+    trackJobs() {
+        this.renderJobStatus();
+        if (this._poller) clearInterval(this._poller);
+        this._poller = setInterval(async () => {
+            await this.renderJobStatus();
+            const activeIds = [this._exportJobId, this._importJobId].filter(Boolean);
+            if (!activeIds.length) {
+                clearInterval(this._poller);
+                this._poller = null;
+                return;
+            }
+            const states = await Promise.all(activeIds.map(id => JobUI.get(id).catch(() => null)));
+            if (states.every(job => !job || job.status !== 'running')) {
+                clearInterval(this._poller);
+                this._poller = null;
+            }
+        }, 3000);
     },
 };

@@ -14,15 +14,17 @@ import (
 
 type QueriesHandler struct {
 	poolMgr *service.PoolManager
+	plans   *service.PlanStore
 }
 
-func NewQueriesHandler(poolMgr *service.PoolManager) *QueriesHandler {
-	return &QueriesHandler{poolMgr: poolMgr}
+func NewQueriesHandler(poolMgr *service.PoolManager, plans *service.PlanStore) *QueriesHandler {
+	return &QueriesHandler{poolMgr: poolMgr, plans: plans}
 }
 
 func (h *QueriesHandler) getPool(r *http.Request) *pgxpool.Pool {
 	db := r.URL.Query().Get("database")
-	pool, err := h.poolMgr.GetPool(r.Context(), db)
+	profile := r.URL.Query().Get("profile")
+	pool, err := h.poolMgr.GetPoolForProfile(r.Context(), db, profile)
 	if err != nil {
 		return h.poolMgr.DefaultPool()
 	}
@@ -90,6 +92,9 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query    string `json:"query"`
 		Database string `json:"database"`
+		Profile  string `json:"profile"`
+		Save     bool   `json:"save"`
+		Name     string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "invalid request"})
@@ -109,7 +114,7 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pool, err := h.poolMgr.GetPool(r.Context(), req.Database)
+	pool, err := h.poolMgr.GetPoolForProfile(r.Context(), req.Database, req.Profile)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to connect to database: " + err.Error()})
 		return
@@ -140,11 +145,23 @@ func (h *QueriesHandler) ExplainQuery(w http.ResponseWriter, r *http.Request) {
 
 	var plan any
 	json.Unmarshal(planJSON, &plan)
-
-	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: map[string]any{
+	data := map[string]any{
 		"mode": mode,
 		"plan": plan,
-	}})
+	}
+	if req.Save && h.plans != nil {
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = strings.TrimSpace(req.Query)
+			if len(name) > 80 {
+				name = name[:80]
+			}
+		}
+		saved := h.plans.Save(name, req.Query, req.Database, req.Profile, mode, planJSON)
+		data["planId"] = saved.ID
+	}
+
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: data})
 }
 
 // ResetStats resets pg_stat_statements statistics.
@@ -156,4 +173,25 @@ func (h *QueriesHandler) ResetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: "statistics reset"})
+}
+
+func (h *QueriesHandler) ListPlans(w http.ResponseWriter, r *http.Request) {
+	if h.plans == nil {
+		writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: h.plans.List(100)})
+}
+
+func (h *QueriesHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
+	if h.plans == nil {
+		writeJSON(w, http.StatusNotFound, model.APIResponse{Error: "plan store unavailable"})
+		return
+	}
+	plan := h.plans.Get(r.PathValue("id"))
+	if plan == nil {
+		writeJSON(w, http.StatusNotFound, model.APIResponse{Error: "plan not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: plan})
 }
