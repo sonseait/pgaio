@@ -190,8 +190,14 @@ func (h *DatabaseHandler) ImportDatabase(w http.ResponseWriter, r *http.Request)
 
 		env := append(os.Environ(), "PGPASSWORD="+getHandlerEnv("POSTGRESQL_PASSWORD", ""))
 
-		// If clean mode: truncate all user tables before import
-		if clean {
+		isCustom := ext == ".dump" || ext == ".backup"
+
+		// For custom-format dumps, pg_restore --clean --if-exists drops and
+		// recreates objects from the dump itself, which is safer than a manual
+		// TRUNCATE (it also handles schema changes — dropped/renamed columns).
+		// We therefore only run the manual TRUNCATE for plain-SQL imports, where
+		// psql has no equivalent built-in clean step.
+		if clean && !isCustom {
 			h.jobs.Update(job.ID, "cleaning non-system schemas before import", "")
 			log.Println("[database] cleaning: truncating all user tables...")
 			truncSQL := `DO $$ DECLARE r RECORD; BEGIN
@@ -214,14 +220,24 @@ func (h *DatabaseHandler) ImportDatabase(w http.ResponseWriter, r *http.Request)
 
 		var cmd *exec.Cmd
 
-		if ext == ".dump" || ext == ".backup" {
+		if isCustom {
 			// Custom format — use pg_restore
 			restoreArgs := []string{"-h", "/tmp", "-U", pgUser, "-d", dbName,
 				"--no-owner", "--no-privileges"}
+			// --clean --if-exists drops existing objects (no error if absent)
+			// before recreating them, giving a clean restore to the dump's state.
+			// Skipped for data-only restores, where there is no schema to drop.
+			if clean && !dataOnly {
+				restoreArgs = append(restoreArgs, "--clean", "--if-exists")
+			}
 			if dataOnly {
 				restoreArgs = append(restoreArgs, "--data-only")
 			}
-			if disableTriggers {
+			// pg_restore only accepts --disable-triggers together with
+			// --data-only; applying it to a full restore aborts with an error.
+			// Silently scope it to data-only restores so the common one-click
+			// full restore never trips over a leftover default checkbox.
+			if disableTriggers && dataOnly {
 				restoreArgs = append(restoreArgs, "--disable-triggers")
 			}
 			if singleTx {

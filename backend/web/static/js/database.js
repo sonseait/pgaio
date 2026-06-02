@@ -67,34 +67,40 @@ const DatabaseIO = {
                         </select>
                     </div>
                 </div>
-                <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
-                    <div class="mono-xs dim" style="margin-bottom:2px">import options:</div>
+                <div class="mono-xs dim" style="margin-top:8px;line-height:1.5">
+                    just drop a file below — sensible defaults are pre-selected so a restore
+                    works with a single click. expand advanced options only if you need them.
+                </div>
+                <details style="margin-top:8px">
+                    <summary class="mono-xs dim" style="cursor:pointer;user-select:none">advanced options</summary>
+                    <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
                     <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-                        <input type="checkbox" id="import-data-only">
-                        <span>data only</span>
-                        <span class="dim">— skip schema, only insert data rows</span>
+                        <input type="checkbox" id="import-clean" checked>
+                        <span>clean (overwrite)</span>
+                        <span class="dim">— <span class="red">drop &amp; recreate existing objects</span> so the restore matches the dump exactly</span>
                     </label>
                     <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
                         <input type="checkbox" id="import-disable-triggers" checked>
                         <span>disable triggers</span>
-                        <span class="dim">— avoid FK constraint errors during import</span>
-                    </label>
-                    <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-                        <input type="checkbox" id="import-single-tx">
-                        <span>single transaction</span>
-                        <span class="dim">— atomic: rollback all on any error</span>
-                    </label>
-                    <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-                        <input type="checkbox" id="import-clean">
-                        <span>clean (truncate)</span>
-                        <span class="dim">— <span class="red">truncate all tables</span> before import</span>
+                        <span class="dim">— avoid FK constraint errors (applies to data-only restores)</span>
                     </label>
                     <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
                         <input type="checkbox" id="import-no-tablespaces" checked>
                         <span>no tablespaces</span>
                         <span class="dim">— skip tablespace assignments (Docker safe)</span>
                     </label>
-                </div>
+                    <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                        <input type="checkbox" id="import-data-only">
+                        <span>data only</span>
+                        <span class="dim">— skip schema, only insert data rows</span>
+                    </label>
+                    <label class="mono-xs" style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                        <input type="checkbox" id="import-single-tx">
+                        <span>single transaction</span>
+                        <span class="dim">— atomic: rollback all on any error</span>
+                    </label>
+                    </div>
+                </details>
                 <div id="import-dropzone"
                     style="margin-top: 8px;border:2px dashed var(--border);border-radius:6px;padding:32px;
                     text-align:center;cursor:pointer;transition:all 0.2s">
@@ -194,7 +200,11 @@ const DatabaseIO = {
             return;
         }
 
-        if (!await showConfirm('import database', `Import "${file.name}" (${formatBytes(file.size)}) into database "${db}"?\n\nExisting data may be overwritten.`, { danger: true, confirmText: 'import' })) return;
+        const willClean = document.getElementById('import-clean')?.checked;
+        const cleanWarning = willClean
+            ? '\n\n⚠️ "clean (overwrite)" is on: existing objects will be dropped and recreated from the dump. Current data in those objects will be lost.'
+            : '\n\nExisting data may be overwritten.';
+        if (!await showConfirm('import database', `Import "${file.name}" (${formatBytes(file.size)}) into database "${db}"?${cleanWarning}`, { danger: true, confirmText: 'import' })) return;
 
         const statusEl = document.getElementById('import-status');
         statusEl.innerHTML = '<span class="mono-xs yellow">uploading...</span>';

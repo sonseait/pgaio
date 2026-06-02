@@ -39,8 +39,11 @@ export PGBOUNCER_ADMIN_USER="${PGBOUNCER_ADMIN_USER:-pgbouncer}"
 # ========================
 cleanup() {
     echo "🛑 Shutting down..."
+    # Send SIGTERM and wait for the processes to exit so PgBouncer has a chance
+    # to remove its own pidfile before the container goes away.
     kill $PGAIO_PID $PGB_PID 2>/dev/null || true
-    wait $PGAIO_PID $PGB_PID 2>/dev/null || true
+    wait $PGAIO_PID 2>/dev/null || true
+    wait $PGB_PID 2>/dev/null || true
     echo "👋 All processes stopped"
     exit 0
 }
@@ -70,6 +73,21 @@ done
 # ========================
 # Start PgBouncer
 # ========================
+# Remove a stale pidfile left behind by an unclean shutdown (e.g. SIGKILL /
+# OOM / power loss), which otherwise makes PgBouncer refuse to start with
+# "pidfile exists, another instance running?". Only remove it when the PID it
+# references is no longer alive — never reap a genuinely running instance.
+PGB_PIDFILE="/tmp/pgbouncer.pid"
+if [ -f "$PGB_PIDFILE" ]; then
+    STALE_PID=$(cat "$PGB_PIDFILE" 2>/dev/null)
+    if [ -n "$STALE_PID" ] && kill -0 "$STALE_PID" 2>/dev/null; then
+        echo "❌ PgBouncer already running (pid: $STALE_PID), aborting"
+        exit 1
+    fi
+    echo "🧹 Removing stale PgBouncer pidfile (pid: ${STALE_PID:-empty})"
+    rm -f "$PGB_PIDFILE"
+fi
+
 echo "⚡ Starting PgBouncer..."
 pgbouncer /etc/pgbouncer/pgbouncer.ini &
 PGB_PID=$!

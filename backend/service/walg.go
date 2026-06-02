@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pgaio/model"
@@ -19,6 +21,11 @@ import (
 type WalG struct {
 	dataDir string
 	jobs    *JobStore
+	config  *ConfigStore
+
+	// opMu serializes destructive cluster operations (backup/restore) so that
+	// two restores — or a restore racing a backup — can never run at once.
+	opMu sync.Mutex
 }
 
 // setPgEnv sets PostgreSQL connection env vars on a command.
@@ -38,11 +45,11 @@ func getEnvOrDefault(key, def string) string {
 	return def
 }
 
-func NewWalG(dataDir string, jobs *JobStore) *WalG {
+func NewWalG(dataDir string, jobs *JobStore, config *ConfigStore) *WalG {
 	if dataDir == "" {
 		dataDir = "/bitnami/postgresql/data"
 	}
-	return &WalG{dataDir: dataDir, jobs: jobs}
+	return &WalG{dataDir: dataDir, jobs: jobs, config: config}
 }
 
 // RawBackup is the struct wal-g backup-list --json outputs.
@@ -116,10 +123,30 @@ func (w *WalG) ListBackups(ctx context.Context) (*model.BackupListResponse, erro
 		BackupCount: len(backups),
 		TotalSize:   humanBytes(totalSize),
 	}
-	if len(backups) > 0 {
-		resp.LastBackup = backups[len(backups)-1].Name
+	if name := latestByTime(backups); name != "" {
+		resp.LastBackup = name
 	}
 	return resp, nil
+}
+
+// latestByTime returns the name of the most recent backup by finish time
+// (falling back to start time), independent of the order wal-g returns them in.
+func latestByTime(backups []model.Backup) string {
+	var (
+		latestName string
+		latestTime time.Time
+	)
+	for _, b := range backups {
+		candidate := b.FinishTime
+		if candidate.IsZero() {
+			candidate = b.StartTime
+		}
+		if latestName == "" || candidate.After(latestTime) {
+			latestName = b.Name
+			latestTime = candidate
+		}
+	}
+	return latestName
 }
 
 func (w *WalG) LatestBackupTime(ctx context.Context) (time.Time, error) {
@@ -148,22 +175,7 @@ func (w *WalG) latestBackupName(ctx context.Context) (string, error) {
 	if len(resp.Backups) == 0 {
 		return "", fmt.Errorf("no backups found")
 	}
-	latest := resp.Backups[0]
-	latestTime := latest.FinishTime
-	if latestTime.IsZero() {
-		latestTime = latest.StartTime
-	}
-	for _, backup := range resp.Backups[1:] {
-		candidate := backup.FinishTime
-		if candidate.IsZero() {
-			candidate = backup.StartTime
-		}
-		if candidate.After(latestTime) {
-			latest = backup
-			latestTime = candidate
-		}
-	}
-	return latest.Name, nil
+	return latestByTime(resp.Backups), nil
 }
 
 func parseWalgTime(s string) (time.Time, error) {
@@ -186,6 +198,11 @@ func parseWalgTime(s string) (time.Time, error) {
 func (w *WalG) TriggerBackup(ctx context.Context) (*model.BackupTriggerResponse, error) {
 	job := w.jobs.Start("backup", "wal-g backup-push", "", "backup queued", nil)
 	go func() {
+		// Serialize against restores and other backups — concurrent
+		// backup-push / restore would corrupt the cluster or the WAL stream.
+		w.opMu.Lock()
+		defer w.opMu.Unlock()
+
 		w.jobs.Update(job.ID, "running WAL-G backup", "")
 		log.Println("[walg] starting manual backup...")
 		cmd := exec.Command("wal-g", "backup-push", w.dataDir)
@@ -197,8 +214,14 @@ func (w *WalG) TriggerBackup(ctx context.Context) (*model.BackupTriggerResponse,
 			log.Printf("[walg] manual backup failed: %s: %v", stderr.String(), err)
 			return
 		}
-		w.jobs.Complete(job.ID, "backup completed successfully")
 		log.Println("[walg] manual backup completed successfully")
+
+		// Enforce retention so S3 storage does not grow unbounded.
+		if msg := w.applyRetention(); msg != "" {
+			w.jobs.Complete(job.ID, "backup completed successfully; "+msg)
+			return
+		}
+		w.jobs.Complete(job.ID, "backup completed successfully")
 	}()
 
 	return &model.BackupTriggerResponse{
@@ -206,6 +229,34 @@ func (w *WalG) TriggerBackup(ctx context.Context) (*model.BackupTriggerResponse,
 		Status:  "running",
 		JobID:   job.ID,
 	}, nil
+}
+
+// applyRetention deletes old backups beyond the configured RetainCount using
+// `wal-g delete retain FULL <n> --confirm`. It returns a short human-readable
+// status suffix (empty when retention is disabled or nothing needed pruning).
+// Retention failures are logged but never fail the backup job itself — the
+// backup already succeeded, and a failed prune should not mask that.
+func (w *WalG) applyRetention() string {
+	if w.config == nil {
+		return ""
+	}
+	retain := w.config.GetBackup().RetainCount
+	if retain <= 0 {
+		log.Println("[walg] retention disabled (retainCount <= 0), skipping prune")
+		return ""
+	}
+
+	log.Printf("[walg] pruning backups, retaining last %d full backups...", retain)
+	cmd := exec.Command("wal-g", "delete", "retain", "FULL", strconv.Itoa(retain), "--confirm")
+	setPgEnv(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("[walg] retention prune failed: %s: %v", stderr.String(), err)
+		return "retention prune failed (see logs)"
+	}
+	log.Printf("[walg] retention prune complete (kept %d full backups)", retain)
+	return fmt.Sprintf("pruned to last %d backups", retain)
 }
 
 func (w *WalG) VerifyBackup(ctx context.Context, backupName string) (*model.BackupTriggerResponse, error) {
@@ -317,6 +368,14 @@ func (w *WalG) RestoreBackup(ctx context.Context, req model.RestoreRequest) (*mo
 	}
 
 	isPITR := req.TargetTime != ""
+	if isPITR {
+		// TargetTime is interpolated into postgresql.auto.conf; reject anything
+		// that is not a plain timestamp to prevent config injection.
+		if _, err := parseWalgTime(req.TargetTime); err != nil {
+			return nil, fmt.Errorf("invalid targetTime %q: expected an RFC3339 timestamp", req.TargetTime)
+		}
+	}
+
 	label := req.BackupName
 	if isPITR {
 		label = fmt.Sprintf("%s (PITR → %s)", req.BackupName, req.TargetTime)
@@ -327,10 +386,22 @@ func (w *WalG) RestoreBackup(ctx context.Context, req model.RestoreRequest) (*mo
 	})
 
 	go func() {
-		w.jobs.Update(job.ID, "stopping PostgreSQL", "")
-		log.Printf("[walg] ⚠️ RESTORE STARTED for: %s", label)
+		// Serialize against backups and other restores.
+		w.opMu.Lock()
+		defer w.opMu.Unlock()
 
 		dataDir := w.dataDir
+
+		// Guard against an empty data dir — a blank dataDir would turn the
+		// cleanup step into a catastrophic wipe of the wrong location.
+		if strings.TrimSpace(dataDir) == "" {
+			w.jobs.Fail(job.ID, "restore aborted", "data directory is not configured")
+			log.Println("[walg] restore aborted: empty data directory")
+			return
+		}
+
+		w.jobs.Update(job.ID, "stopping PostgreSQL", "")
+		log.Printf("[walg] ⚠️ RESTORE STARTED for: %s", label)
 
 		// Step 1: Stop PostgreSQL
 		log.Println("[walg] step 1/5: stopping PostgreSQL...")
@@ -343,13 +414,14 @@ func (w *WalG) RestoreBackup(ctx context.Context, req model.RestoreRequest) (*mo
 		}
 		log.Println("[walg] PostgreSQL stopped")
 
-		// Step 2: Clean data directory (keep the directory itself)
+		// Step 2: Clean data directory (keep the directory itself).
+		// Done in pure Go rather than `bash -c rm -rf` to avoid any shell
+		// interpolation of dataDir and to fail loudly instead of globbing.
 		w.jobs.Update(job.ID, "cleaning data directory", "")
 		log.Println("[walg] step 2/5: cleaning data directory...")
-		cleanCmd := exec.Command("bash", "-c", fmt.Sprintf("rm -rf %s/*", dataDir))
-		if out, err := cleanCmd.CombinedOutput(); err != nil {
-			w.jobs.Fail(job.ID, "restore failed while cleaning data directory", string(out))
-			log.Printf("[walg] clean data dir failed: %s %v", string(out), err)
+		if err := cleanDir(dataDir); err != nil {
+			w.jobs.Fail(job.ID, "restore failed while cleaning data directory", err.Error())
+			log.Printf("[walg] clean data dir failed: %v", err)
 			return
 		}
 		log.Println("[walg] data directory cleaned")
@@ -435,6 +507,26 @@ func humanBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// cleanDir removes every entry inside dir while keeping dir itself, without
+// invoking a shell. dir must be a non-empty, existing directory.
+func cleanDir(dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("refusing to clean empty directory path")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read data dir: %w", err)
+	}
+	for _, entry := range entries {
+		target := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("remove %s: %w", target, err)
+		}
+	}
+	return nil
 }
 
 func sanitizeArtifactName(name string) string {

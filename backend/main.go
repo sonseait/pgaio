@@ -71,7 +71,7 @@ func main() {
 
 	// Services
 	monitor := service.NewMonitor(pool)
-	walg := service.NewWalG(getEnv("PGDATA", "/bitnami/postgresql/data"), jobs)
+	walg := service.NewWalG(getEnv("PGDATA", "/bitnami/postgresql/data"), jobs, configStore)
 
 	// S3 client (optional)
 	var s3Client *service.S3Client
