@@ -48,8 +48,6 @@ services:
       "
 
   redis:
-    image: bitnami/redis:latest
+    image: redis:latest
     ports:
       - "6379:6379" # Redis API
-    environment:
-      - ALLOW_EMPTY_PASSWORD=yes
