@@ -612,8 +612,8 @@ td:last-child {
   }
 }
 
-/* TOTP Modal */
-.totp-overlay {
+/* Password Modal */
+.auth-overlay {
   position: fixed;
   inset: 0;
   z-index: 99999;
@@ -622,25 +622,25 @@ td:last-child {
   align-items: center;
   justify-content: center;
 }
-.totp-dialog {
+.auth-dialog {
   background: var(--bg-2);
   border: 1px solid var(--border-light);
   padding: 24px;
   width: 320px;
   max-width: 90vw;
 }
-.totp-title {
+.auth-title {
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 6px;
   color: var(--text-0);
 }
-.totp-desc {
+.auth-desc {
   font-size: 11px;
   color: var(--text-2);
   margin-bottom: 16px;
 }
-.totp-input {
+.auth-input {
   width: 100%;
   padding: 10px;
   font-size: 20px;
@@ -653,23 +653,23 @@ td:last-child {
   margin-bottom: 16px;
   box-sizing: border-box;
 }
-.totp-input:focus {
+.auth-input:focus {
   border-color: var(--accent);
   outline: none;
 }
-.totp-actions {
+.auth-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
 }
 
-/* TOTP Setup Page */
-.totp-setup {
+/* Password Page */
+.auth-setup {
   max-width: 400px;
   margin: 40px auto;
   text-align: center;
 }
-.totp-setup .qr-placeholder {
+.auth-setup .qr-placeholder {
   width: 200px;
   height: 200px;
   margin: 16px auto;
@@ -679,7 +679,7 @@ td:last-child {
   align-items: center;
   justify-content: center;
 }
-.totp-setup .secret-display {
+.auth-setup .secret-display {
   font-size: 16px;
   letter-spacing: 3px;
   color: var(--accent);

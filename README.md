@@ -11,7 +11,7 @@
 - Backup and recovery workflows powered by WAL-G and S3-compatible object storage, including scheduled backups, verification, retention, and point-in-time recovery.
 - PgBouncer metrics and administrative controls, plus connection profiles for routing supported features to PostgreSQL or PgBouncer.
 - Maintenance tooling for vacuum and bloat analysis, lock trees, index recommendations, online `pg_repack`, extensions, roles, configuration, logs, and database import/export jobs.
-- A tuning wizard, schema-drift checks, Telegram health alerts, and TOTP protection for state-changing actions.
+- A tuning wizard, schema-drift checks, Telegram health alerts, and password protection for state-changing actions.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ PostgreSQL (:5432) PgBouncer (:6432)
 WAL-G --> S3-compatible storage
 ```
 
-The development Compose stack also starts MinIO for local S3-compatible backup testing and Redis for experimentation.
+The development Compose stack also starts Silo for local S3-compatible backup testing and Redis for experimentation.
 
 ## Quick start
 
@@ -43,13 +43,17 @@ Start the development environment:
 docker compose up --build -d
 ```
 
-Open the dashboard at [http://localhost:8080](http://localhost:8080). On first use, set up TOTP authentication in the UI with an authenticator application.
+Open the dashboard at [http://localhost:8080](http://localhost:8080). On the first start, PGAIO generates a dashboard password and prints it once in the container log:
+
+```bash
+docker compose logs pgaio
+```
 
 Local service endpoints:
 
 | Service | Address | Development credentials |
 | --- | --- | --- |
-| PGAIO dashboard | `http://localhost:8080` | TOTP setup required on first use |
+| PGAIO dashboard | `http://localhost:8080` | Password printed in `docker compose logs pgaio` on first start |
 | PostgreSQL | `localhost:5432` | user `postgres`, password `postgres` |
 | MinIO API | `http://localhost:9000` | `minioadmin` / `minioadmin` |
 | MinIO Console | `http://localhost:9001` | `minioadmin` / `minioadmin` |
@@ -93,9 +97,9 @@ Useful application variables:
 | `POSTGRESQL_USERNAME` / `POSTGRESQL_PASSWORD` | `postgres` / `postgres` | Primary PostgreSQL and PgBouncer admin credentials |
 | `POSTGRESQL_DATABASE` | `postgres` | Default database |
 | `PGBOUNCER_ADMIN_ADDR` | `127.0.0.1:6432` | PgBouncer admin endpoint |
-| `PGAIO_TOTP_SECRET` | - | Preconfigure the TOTP secret instead of completing first-run setup |
+| `PGAIO_PASSWORD` | - | Dashboard password; when omitted, a secure password is generated and persisted on first start |
 
-PGAIO persists its dashboard settings and TOTP secret under `/bitnami/postgresql`. Mount persistent volumes for PostgreSQL data and this directory before relying on backups, scheduled jobs, settings, or authentication across container recreation.
+PGAIO persists its dashboard settings and generated password under `/bitnami/postgresql`. Mount persistent volumes for PostgreSQL data and this directory before relying on backups, scheduled jobs, settings, or authentication across container recreation.
 
 ## Development
 
@@ -124,7 +128,7 @@ postgresql/      PostgreSQL startup and extension setup
 ## Security notes
 
 - Treat the dashboard as an administrative interface. Place it behind a trusted network boundary and HTTPS reverse proxy; do not publish it directly to the internet.
-- Configure TOTP before allowing other users access. Sessions are held in memory and expire after 15 minutes of inactivity.
+- Keep the generated dashboard password private, or set `PGAIO_PASSWORD` through a secrets manager. Sessions are held in memory and expire after 15 minutes of inactivity.
 - Use dedicated least-privilege credentials where possible. Several features intentionally require elevated PostgreSQL permissions, including maintenance, extension management, configuration changes, and database restore.
 - Keep object-storage credentials and `WALG_LIBSODIUM_KEY` outside version control, ideally in a secrets manager.
 - Test backups and restore procedures regularly. A successful upload is not a substitute for a verified restore.

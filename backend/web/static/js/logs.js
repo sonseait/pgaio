@@ -55,7 +55,8 @@ const LogStream = {
         if (this._ws) { this._ws.close(); this._ws = null; }
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         try {
-            this._ws = new WebSocket(`${proto}://${location.host}/api/logs/ws`);
+            const sessionId = sessionStorage.getItem('pgaio_session');
+            this._ws = new WebSocket(`${proto}://${location.host}/api/logs/ws?session_id=${encodeURIComponent(sessionId || '')}`);
         } catch (e) { return; }
 
         this._ws.onmessage = (e) => {
@@ -106,4 +107,3 @@ const LogStream = {
         if (this._ws) { this._ws.onclose = null; this._ws.close(); this._ws = null; }
     },
 };
-

@@ -38,6 +38,12 @@ func setPgEnv(cmd *exec.Cmd) {
 	)
 }
 
+// setWalGDeltaLimit prevents WAL-G from promoting scheduled deltas to full
+// backups before the separately configured full-backup schedule runs.
+func setWalGDeltaLimit(cmd *exec.Cmd) {
+	cmd.Env = append(cmd.Env, "WALG_DELTA_MAX_STEPS=1000")
+}
+
 func getEnvOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -194,38 +200,72 @@ func parseWalgTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unable to parse time: %s", s)
 }
 
-// TriggerBackup starts a manual backup.
+// TriggerBackup starts a manual incremental backup.
 func (w *WalG) TriggerBackup(ctx context.Context) (*model.BackupTriggerResponse, error) {
-	job := w.jobs.Start("backup", "wal-g backup-push", "", "backup queued", nil)
+	return w.triggerBackup(ctx, "incremental")
+}
+
+// TriggerFullBackup starts a full backup, independent of the existing chain.
+func (w *WalG) TriggerFullBackup(ctx context.Context) (*model.BackupTriggerResponse, error) {
+	return w.triggerBackup(ctx, "full")
+}
+
+// TriggerIncrementalBackup starts a delta backup based on the newest backup.
+// It is skipped until a scheduled or manually requested full backup exists.
+func (w *WalG) TriggerIncrementalBackup(ctx context.Context) (*model.BackupTriggerResponse, error) {
+	return w.triggerBackup(ctx, "incremental")
+}
+
+func (w *WalG) triggerBackup(_ context.Context, kind string) (*model.BackupTriggerResponse, error) {
+	job := w.jobs.Start("backup", "wal-g backup-push", "", kind+" backup queued", map[string]string{"kind": kind})
 	go func() {
 		// Serialize against restores and other backups — concurrent
 		// backup-push / restore would corrupt the cluster or the WAL stream.
 		w.opMu.Lock()
 		defer w.opMu.Unlock()
 
-		w.jobs.Update(job.ID, "running WAL-G backup", "")
-		log.Println("[walg] starting manual backup...")
-		cmd := exec.Command("wal-g", "backup-push", w.dataDir)
+		args := []string{"backup-push", w.dataDir}
+		actualKind := kind
+		if kind == "full" {
+			args = append(args, "--full")
+		} else {
+			backups, err := w.ListBackups(context.Background())
+			if err != nil {
+				w.jobs.Fail(job.ID, "incremental backup could not inspect base backup", err.Error())
+				return
+			}
+			if len(backups.Backups) == 0 {
+				w.jobs.Cancel(job.ID, "incremental backup skipped: no full base backup yet")
+				return
+			}
+			args = append(args, "--delta-from-name", latestByTime(backups.Backups))
+		}
+		w.jobs.Update(job.ID, "running WAL-G "+actualKind+" backup", "")
+		log.Printf("[walg] starting %s backup...", actualKind)
+		cmd := exec.Command("wal-g", args...)
 		setPgEnv(cmd)
+		if actualKind == "incremental" {
+			setWalGDeltaLimit(cmd)
+		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			w.jobs.Fail(job.ID, "backup failed", stderr.String())
-			log.Printf("[walg] manual backup failed: %s: %v", stderr.String(), err)
+			log.Printf("[walg] %s backup failed: %s: %v", actualKind, stderr.String(), err)
 			return
 		}
-		log.Println("[walg] manual backup completed successfully")
+		log.Printf("[walg] %s backup completed successfully", actualKind)
 
 		// Enforce retention so S3 storage does not grow unbounded.
 		if msg := w.applyRetention(); msg != "" {
-			w.jobs.Complete(job.ID, "backup completed successfully; "+msg)
+			w.jobs.Complete(job.ID, actualKind+" backup completed successfully; "+msg)
 			return
 		}
-		w.jobs.Complete(job.ID, "backup completed successfully")
+		w.jobs.Complete(job.ID, actualKind+" backup completed successfully")
 	}()
 
 	return &model.BackupTriggerResponse{
-		Message: "Backup triggered in background",
+		Message: kind + " backup triggered in background",
 		Status:  "running",
 		JobID:   job.ID,
 	}, nil

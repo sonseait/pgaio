@@ -1,8 +1,10 @@
 # PGAIO — Docker Compose (Development/Testing)
-# Includes MinIO for S3-compatible storage testing
+# Includes Silo for S3-compatible storage testing
 
 services:
   pgaio:
+    # WAL-G bundled in this image is built for linux/amd64.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -16,17 +18,17 @@ services:
       - WALG_S3_PREFIX=s3://pgaio-backups/wal-g
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
-      - AWS_ENDPOINT=http://minio:9000
+      - AWS_ENDPOINT=http://silo:9000
       - AWS_S3_FORCE_PATH_STYLE=true
       - AWS_REGION=us-east-1
       # Backup encryption (optional — generate with: openssl rand -hex 32)
       - WALG_LIBSODIUM_KEY=d82943af045a1205cbba1f2fed4530d3036b4cde48d863be01baf1e57037e59c
     depends_on:
-      minio-init:
+      silo-init:
         condition: service_completed_successfully
 
-  minio:
-    image: minio/minio:latest
+  silo:
+    image: pgsty/silo:latest
     ports:
       - "9000:9000" # S3 API
       - "9001:9001" # MinIO Console
@@ -35,15 +37,15 @@ services:
       - MINIO_ROOT_PASSWORD=minioadmin
     command: server /data --console-address ":9001"
 
-  minio-init:
-    image: minio/mc:latest
+  silo-init:
+    image: pgsty/silo:latest
     depends_on:
-      - minio
+      - silo
     entrypoint: >
       /bin/sh -c "
       sleep 3;
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      mc mb --ignore-existing myminio/pgaio-backups;
+      mcli alias set silo http://silo:9000 minioadmin minioadmin;
+      mcli mb --ignore-existing silo/pgaio-backups;
       echo 'Bucket created successfully';
       "
 

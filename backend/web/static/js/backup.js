@@ -18,7 +18,7 @@ const Backup = {
                         <i data-lucide="clock" class="icon-sm"></i> pitr
                     </button>
                     <button class="btn btn-primary" id="btn-trigger-backup">
-                        <i data-lucide="play" class="icon-sm"></i> trigger backup
+                        <i data-lucide="play" class="icon-sm"></i> trigger incremental
                     </button>
                 </div>
             </div>
@@ -64,10 +64,23 @@ const Backup = {
                         <input type="checkbox" id="sched-enabled" ${d.enabled ? "checked" : ""}>
                         <span>${d.enabled ? '<span class="green">enabled</span>' : '<span class="dim">disabled</span>'}</span>
                     </label>
-                    <select id="sched-interval"
+                    <span class="mono-xs dim">incremental</span>
+                    <select id="sched-incremental-interval"
                         style="background:var(--bg-0);border:1px solid var(--border);color:var(--text-1);
                         padding:2px 6px;font-size:11px;font-family:var(--font)">
-                        ${[1, 3, 6, 12, 24].map((h) => `<option value="${h}" ${d.intervalHours === h ? "selected" : ""}>every ${h}h</option>`).join("")}
+                        ${[1, 3, 6, 12, 24].map((h) => `<option value="${h}" ${d.incrementalIntervalHours === h ? "selected" : ""}>every ${h}h</option>`).join("")}
+                    </select>
+                    <span class="dim mono-xs">·</span>
+                    <span class="mono-xs dim">full</span>
+                    <select id="sched-full-weekday"
+                        style="background:var(--bg-0);border:1px solid var(--border);color:var(--text-1);
+                        padding:2px 6px;font-size:11px;font-family:var(--font)">
+                        ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, index) => `<option value="${index}" ${d.fullWeekday === index ? "selected" : ""}>${day}</option>`).join("")}
+                    </select>
+                    <select id="sched-full-hour"
+                        style="background:var(--bg-0);border:1px solid var(--border);color:var(--text-1);
+                        padding:2px 6px;font-size:11px;font-family:var(--font)">
+                        ${Array.from({ length: 24 }, (_, hour) => `<option value="${hour}" ${d.fullHour === hour ? "selected" : ""}>${String(hour).padStart(2, "0")}:00</option>`).join("")}
                     </select>
                     <span class="dim mono-xs">·</span>
                     <span class="mono-xs dim">keep</span>
@@ -77,7 +90,7 @@ const Backup = {
                         ${[3, 5, 7, 10, 14, 30].map((n) => `<option value="${n}" ${cfg.backup?.retainCount === n ? "selected" : ""}>${n} backups</option>`).join("")}
                     </select>
                     <button onclick="Backup.saveSchedule()" class="btn btn-sm" style="font-size:9px">save</button>
-                    ${d.nextRun ? `<span class="mono-xs dim" style="margin-left:auto">next: ${new Date(d.nextRun).toLocaleString()}</span>` : ""}
+                    ${d.nextIncrementalRun ? `<span class="mono-xs dim" style="margin-left:auto">next inc: ${new Date(d.nextIncrementalRun).toLocaleString()} · full: ${new Date(d.nextFullRun).toLocaleString()}</span>` : ""}
                 </div>
             `;
     } catch (e) {
@@ -91,8 +104,12 @@ const Backup = {
       const cfg = settingsRes.data;
       cfg.backup.enabled =
         document.getElementById("sched-enabled")?.checked || false;
-      cfg.backup.intervalHours =
-        parseInt(document.getElementById("sched-interval")?.value) || 6;
+      cfg.backup.incrementalIntervalHours =
+        parseInt(document.getElementById("sched-incremental-interval")?.value) || 1;
+      cfg.backup.fullWeekday =
+        parseInt(document.getElementById("sched-full-weekday")?.value) || 0;
+      cfg.backup.fullHour =
+        parseInt(document.getElementById("sched-full-hour")?.value) || 0;
       cfg.backup.retainCount =
         parseInt(document.getElementById("retain-count")?.value) || 7;
       await apiProtected("/settings", {
@@ -145,10 +162,10 @@ const Backup = {
 
   async triggerBackup() {
     try {
-      showToast("starting backup...", "info");
+      showToast("starting incremental backup...", "info");
       const res = await apiProtected("/backups/trigger", { method: "POST" });
       this.trackJob(res.data?.jobId);
-      showToast("backup started", "success");
+      showToast("incremental backup started", "success");
     } catch (e) {
       /* handled */
     }

@@ -19,7 +19,6 @@ echo "✅ PgBouncer userlist generated"
 if [ -n "$WALG_S3_PREFIX" ]; then
     export AWS_S3_FORCE_PATH_STYLE="${AWS_S3_FORCE_PATH_STYLE:-true}"
     export WALG_COMPRESSION_METHOD="${WALG_COMPRESSION_METHOD:-lz4}"
-    export WALG_DELTA_MAX_STEPS="${WALG_DELTA_MAX_STEPS:-7}"
     export WALG_UPLOAD_CONCURRENCY="${WALG_UPLOAD_CONCURRENCY:-2}"
     export WALG_DOWNLOAD_CONCURRENCY="${WALG_DOWNLOAD_CONCURRENCY:-4}"
     echo "✅ WAL-G configured (prefix: $WALG_S3_PREFIX)"

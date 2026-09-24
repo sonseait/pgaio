@@ -106,8 +106,11 @@ func main() {
 	logPath := getEnv("PG_LOG_PATH", "/opt/bitnami/postgresql/logs/postgresql.log")
 	log.Printf("✅ Log file: %s", logPath)
 
-	// TOTP authentication
-	totpSvc := service.NewTOTP()
+	// Dashboard password authentication
+	authSvc, err := service.NewPasswordAuth()
+	if err != nil {
+		log.Fatalf("failed to initialize dashboard authentication: %v", err)
+	}
 
 	// Backup scheduler
 	scheduler := service.NewScheduler(walg, configStore)
@@ -116,7 +119,7 @@ func main() {
 	alerter := service.NewAlerter(configStore, monitor, walg)
 
 	// HTTP Server
-	srv := server.New(monitor, walg, s3Client, pgbouncer, logPath, pool, poolMgr, jobs, plans, totpSvc, configStore, scheduler, alerter)
+	srv := server.New(monitor, walg, s3Client, pgbouncer, logPath, pool, poolMgr, jobs, plans, authSvc, configStore, scheduler, alerter)
 	addr := ":" + getEnv("PGAIO_PORT", "8080")
 	httpServer := &http.Server{
 		Addr:         addr,

@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 
 	"pgaio/handler"
 	"pgaio/service"
@@ -30,17 +31,17 @@ type Server struct {
 	maintenance *handler.MaintenanceHandler
 	schema      *handler.SchemaHandler
 
-	vacuum     *handler.VacuumHandler
-	locks      *handler.LocksHandler
-	roles      *handler.RolesHandler
-	indexes    *handler.IndexesHandler
-	extensions *handler.ExtensionsHandler
-	alerts     *handler.AlertsHandler
-	database   *handler.DatabaseHandler
-	tuner      *handler.TunerHandler
-	repack     *handler.RepackHandler
-	jobs       *handler.JobsHandler
-	totp       *service.TOTP
+	vacuum      *handler.VacuumHandler
+	locks       *handler.LocksHandler
+	roles       *handler.RolesHandler
+	indexes     *handler.IndexesHandler
+	extensions  *handler.ExtensionsHandler
+	alerts      *handler.AlertsHandler
+	database    *handler.DatabaseHandler
+	tuner       *handler.TunerHandler
+	repack      *handler.RepackHandler
+	jobs        *handler.JobsHandler
+	authService *service.PasswordAuth
 }
 
 // New creates a new HTTP server with all routes.
@@ -54,7 +55,7 @@ func New(
 	poolMgr *service.PoolManager,
 	jobs *service.JobStore,
 	plans *service.PlanStore,
-	totpSvc *service.TOTP,
+	authSvc *service.PasswordAuth,
 	configStore *service.ConfigStore,
 	scheduler *service.Scheduler,
 	alerter *service.Alerter,
@@ -69,23 +70,23 @@ func New(
 		config:      handler.NewConfigHandler(pool),
 		overview:    handler.NewServerOverviewHandler(poolMgr),
 		sql:         handler.NewSQLHandler(poolMgr),
-		auth:        handler.NewAuthHandler(totpSvc),
+		auth:        handler.NewAuthHandler(authSvc),
 		settings:    handler.NewSettingsHandler(configStore, scheduler),
 		queries:     handler.NewQueriesHandler(poolMgr, plans),
 		maintenance: handler.NewMaintenanceHandler(poolMgr),
 		schema:      handler.NewSchemaHandler(poolMgr),
 
-		vacuum:     handler.NewVacuumHandler(poolMgr, jobs),
-		locks:      handler.NewLocksHandler(pool),
-		roles:      handler.NewRolesHandler(pool),
-		indexes:    handler.NewIndexesHandler(poolMgr),
-		extensions: handler.NewExtensionsHandler(poolMgr),
-		alerts:     handler.NewAlertsHandler(alerter),
-		database:   handler.NewDatabaseHandler(pool, jobs),
-		tuner:      handler.NewTunerHandler(service.NewTuner(pool), pool, pgbouncer),
-		repack:     handler.NewRepackHandler(poolMgr, jobs),
-		jobs:       handler.NewJobsHandler(jobs),
-		totp:       totpSvc,
+		vacuum:      handler.NewVacuumHandler(poolMgr, jobs),
+		locks:       handler.NewLocksHandler(pool),
+		roles:       handler.NewRolesHandler(pool),
+		indexes:     handler.NewIndexesHandler(poolMgr),
+		extensions:  handler.NewExtensionsHandler(poolMgr),
+		alerts:      handler.NewAlertsHandler(alerter),
+		database:    handler.NewDatabaseHandler(pool, jobs),
+		tuner:       handler.NewTunerHandler(service.NewTuner(pool), pool, pgbouncer),
+		repack:      handler.NewRepackHandler(poolMgr, jobs),
+		jobs:        handler.NewJobsHandler(jobs),
+		authService: authSvc,
 	}
 	s.routes()
 	return s
@@ -93,17 +94,14 @@ func New(
 
 // protect wraps a handler with session middleware.
 func (s *Server) protect(h http.HandlerFunc) http.HandlerFunc {
-	return handler.SessionMiddleware(s.totp, h)
+	return handler.SessionMiddleware(s.authService, h)
 }
 
 func (s *Server) routes() {
-	// Auth (no session required)
-	s.mux.HandleFunc("GET /api/auth/status", s.auth.GetStatus)
-	s.mux.HandleFunc("GET /api/auth/setup", s.auth.GetSetup)
-	s.mux.HandleFunc("POST /api/auth/setup/confirm", s.auth.ConfirmSetup)
+	// Login is the only API endpoint that does not require a session.
 	s.mux.HandleFunc("POST /api/auth/login", s.auth.Login)
 
-	// Settings (GET = public, POST = TOTP)
+	// Settings (GET = public, POST = authenticated)
 	s.mux.HandleFunc("GET /api/settings", s.settings.GetSettings)
 	s.mux.HandleFunc("POST /api/settings", s.protect(s.settings.UpdateSettings))
 	s.mux.HandleFunc("GET /api/backups/schedule", s.settings.GetScheduleStatus)
@@ -237,5 +235,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[%s] %s", r.Method, r.URL.Path)
+	if strings.HasPrefix(r.URL.Path, "/api/") && !(r.Method == http.MethodPost && r.URL.Path == "/api/auth/login") {
+		s.protect(s.mux.ServeHTTP).ServeHTTP(w, r)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }

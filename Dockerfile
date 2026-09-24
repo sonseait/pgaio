@@ -25,7 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ============================
 # Stage 3: Final image
-FROM bitnami/postgresql:latest
+# Pinned multi-architecture digest; do not replace with a mutable tag.
+FROM bitnami/postgresql@sha256:7b9c5292a8e8b38e7172705cc6e49e34b9a8d9c297c4c7ae04130a3e6a28f3b0
 
 USER root
 
@@ -33,8 +34,8 @@ USER root
 RUN echo "pgaio:x:1001:0:PGAIO User:/home/pgaio:/bin/bash" >> /etc/passwd && \
     mkdir -p /home/pgaio && chown 1001:0 /home/pgaio
 
-# Install runtime deps only (libevent + openssl for pgbouncer)
-RUN install_packages curl libevent openssl
+# Photon 5's package mirror fails TLS negotiation under linux/amd64. curl and
+# OpenSSL are already in the Bitnami image; libevent comes from the Debian build stage.
 
 # Install WAL-G (pre-downloaded to avoid Docker network issues)
 COPY bin/wal-g-pg-24.04-amd64-v3.0.8.tar.gz /tmp/walg.tar.gz
@@ -61,6 +62,7 @@ RUN tar -xf /tmp/pg_repack.tar.gz -C /tmp && \
 
 # Copy PgBouncer binary from builder
 COPY --from=pgbouncer-builder /usr/local/bin/pgbouncer /usr/local/bin/pgbouncer
+COPY --from=pgbouncer-builder /lib/*/libevent-2.1.so.7 /usr/lib/
 RUN chmod +x /usr/local/bin/pgbouncer
 
 # Copy Go backend binary

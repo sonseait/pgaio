@@ -19,10 +19,13 @@ type AppConfig struct {
 }
 
 type BackupConfig struct {
-	Enabled       bool `json:"enabled"`
-	IntervalHours int  `json:"intervalHours"`
-	RetainCount   int  `json:"retainCount"`
-	VerifyEnabled bool `json:"verifyEnabled"`
+	Enabled                  bool `json:"enabled"`
+	IntervalHours            int  `json:"intervalHours"` // Deprecated: retained for existing config files.
+	IncrementalIntervalHours int  `json:"incrementalIntervalHours"`
+	FullWeekday              int  `json:"fullWeekday"`
+	FullHour                 int  `json:"fullHour"`
+	RetainCount              int  `json:"retainCount"`
+	VerifyEnabled            bool `json:"verifyEnabled"`
 }
 
 type AlertConfig struct {
@@ -70,10 +73,13 @@ type ConfigStore struct {
 func defaultConfig() AppConfig {
 	return AppConfig{
 		Backup: BackupConfig{
-			Enabled:       true,
-			IntervalHours: 6,
-			RetainCount:   7,
-			VerifyEnabled: true,
+			Enabled:                  true,
+			IntervalHours:            1,
+			IncrementalIntervalHours: 1,
+			FullWeekday:              1,
+			FullHour:                 4,
+			RetainCount:              7,
+			VerifyEnabled:            true,
 		},
 		Alerts: AlertConfig{
 			Enabled:         false,

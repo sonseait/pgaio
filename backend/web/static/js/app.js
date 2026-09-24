@@ -9,22 +9,7 @@ let wsReconnectTimer = null;
 // API Helper
 // ========================
 async function api(path, options = {}) {
-    try {
-        const res = await fetch(API_BASE + path, {
-            headers: { 'Content-Type': 'application/json' },
-            ...options,
-        });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({ error: res.statusText }));
-            const msg = err.error || res.statusText;
-            showToast(msg, 'error');
-            throw new Error(msg);
-        }
-        return await res.json();
-    } catch (e) {
-        if (e.message !== 'Failed to fetch') console.error('API:', e);
-        throw e;
-    }
+    return apiProtected(path, options);
 }
 
 // Session-protected API call — uses stored session, prompts login if needed
@@ -74,16 +59,15 @@ function showLoginModal(onSuccess, onCancel) {
 
     const modal = document.createElement('div');
     modal.id = 'login-modal';
-    modal.className = 'totp-overlay';
+    modal.className = 'auth-overlay';
     modal.innerHTML = `
-        <div class="totp-dialog">
-            <div class="totp-title">authentication required</div>
-            <div class="totp-desc">enter 6-digit code from your authenticator app</div>
-            <input type="text" id="login-otp-input" class="totp-input" maxlength="6"
-                   pattern="[0-9]*" inputmode="numeric" autocomplete="one-time-code"
-                   placeholder="000000" autofocus>
+        <div class="auth-dialog">
+            <div class="auth-title">authentication required</div>
+            <div class="auth-desc">enter the dashboard password</div>
+            <input type="password" id="login-password-input" class="auth-input"
+                   autocomplete="current-password" placeholder="password" autofocus>
             <div id="login-error" class="mono-xs red" style="margin-bottom:8px;min-height:14px"></div>
-            <div class="totp-actions">
+            <div class="auth-actions">
                 <button class="btn btn-sm" id="login-cancel">cancel</button>
                 <button class="btn btn-sm btn-primary" id="login-confirm">login</button>
             </div>
@@ -91,17 +75,17 @@ function showLoginModal(onSuccess, onCancel) {
     `;
     document.body.appendChild(modal);
 
-    const input = document.getElementById('login-otp-input');
+    const input = document.getElementById('login-password-input');
     input.focus();
 
     const cleanup = () => modal.remove();
     const errEl = document.getElementById('login-error');
 
     const submit = async () => {
-        const code = input.value.trim();
-        if (code.length !== 6 || !/^\d+$/.test(code)) {
+        const password = input.value;
+        if (!password) {
             input.style.borderColor = 'var(--red)';
-            errEl.textContent = 'enter 6 digits';
+            errEl.textContent = 'enter your password';
             input.focus();
             return;
         }
@@ -109,11 +93,11 @@ function showLoginModal(onSuccess, onCancel) {
             const res = await fetch(API_BASE + '/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code }),
+                body: JSON.stringify({ password }),
             });
             const data = await res.json();
             if (!res.ok) {
-                errEl.textContent = data.error || 'invalid code';
+                errEl.textContent = data.error || 'invalid password';
                 input.value = '';
                 input.style.borderColor = 'var(--red)';
                 input.focus();
@@ -137,9 +121,6 @@ function showLoginModal(onSuccess, onCancel) {
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') submit();
         if (e.key === 'Escape') { cleanup(); if (onCancel) onCancel(new Error('cancelled')); }
-    });
-    input.addEventListener('input', () => {
-        if (input.value.trim().length === 6) submit();
     });
 }
 
@@ -450,7 +431,8 @@ function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     try {
-        ws = new WebSocket(`${proto}://${location.host}/api/dashboard/ws?interval=1`);
+        const sessionId = sessionStorage.getItem('pgaio_session');
+        ws = new WebSocket(`${proto}://${location.host}/api/dashboard/ws?interval=1&session_id=${encodeURIComponent(sessionId || '')}`);
     } catch (e) { scheduleReconnect(); return; }
 
     ws.onopen = () => {
@@ -578,62 +560,22 @@ const pages = {
         render: (el) => { if (typeof TunerWizard !== 'undefined') TunerWizard.render(el); },
     },
     auth: {
-        title: 'totp setup', sub: 'authenticator configuration',
-        render: async (el) => {
-            // Check if already set up
-            try {
-                const status = await api('/auth/status');
-                if (status.data?.setup) {
-                    el.innerHTML = `
-                        <div class="totp-setup">
-                            <div class="card" style="padding:24px">
-                                <div class="card-title" style="margin-bottom:16px">TOTP authenticator</div>
-                                <p class="green mono-xs" style="margin-bottom:12px">✓ TOTP is configured and active</p>
-                                <p class="dim" style="font-size:10px">
-                                    Your authenticator app is linked. To reconfigure, delete the secret file
-                                    inside the container and restart.
-                                </p>
-                            </div>
-                        </div>
-                    `;
-                    return;
-                }
-            } catch(e) { /* continue to setup */ }
-
-            el.innerHTML = '<div class="totp-setup"><div class="dim">loading...</div></div>';
-            try {
-                const res = await api('/auth/setup');
-                const info = res.data;
-                el.innerHTML = `
-                    <div class="totp-setup">
-                        <div class="card" style="padding:24px">
-                            <div class="card-title" style="margin-bottom:16px">TOTP authenticator setup</div>
-                            <p class="dim" style="font-size:11px;margin-bottom:16px">
-                                Scan the QR code below with Google Authenticator, Authy, or any TOTP app.<br>
-                                Then enter the 6-digit code to confirm and save.
-                            </p>
-                            <div class="qr-placeholder">
-                                <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(info.url)}" alt="QR" width="180" height="180">
-                            </div>
-                            <div class="secret-display mono-xs">${escHtml(info.secret)}</div>
-                            <p class="dim" style="font-size:10px;margin:8px 0 16px">
-                                issuer: ${escHtml(info.issuer)} · account: ${escHtml(info.account)}
-                            </p>
-                            <div style="display:flex;gap:8px;justify-content:center;align-items:center">
-                                <input type="text" id="setup-otp-input" class="totp-input" maxlength="6"
-                                    pattern="[0-9]*" inputmode="numeric" placeholder="000000"
-                                    style="width:160px;margin:0;font-size:16px">
-                                <button onclick="TOTPSetup.confirm()" class="btn btn-sm btn-primary">
-                                    confirm & save
-                                </button>
-                            </div>
-                            <div id="setup-result" class="mono-xs" style="margin-top:8px"></div>
-                        </div>
+        title: 'dashboard password', sub: 'authentication',
+        render: (el) => {
+            el.innerHTML = `
+                <div class="auth-setup">
+                    <div class="card" style="padding:24px">
+                        <div class="card-title" style="margin-bottom:16px">Dashboard password</div>
+                        <p class="dim" style="font-size:11px;margin-bottom:16px">
+                            The password is generated once during the first container start and persists in the PostgreSQL volume.
+                        </p>
+                        <p class="mono-xs green">docker compose logs pgaio</p>
+                        <p class="dim" style="font-size:10px;margin-top:16px">
+                            Set <code>PGAIO_PASSWORD</code> to provide your own password.
+                        </p>
                     </div>
-                `;
-            } catch (e) {
-                el.innerHTML = `<div class="dim">error: ${escHtml(e.message)}</div>`;
-            }
+                </div>
+            `;
         },
     },
 };
@@ -661,59 +603,18 @@ function navigate() {
 }
 
 // ========================
-// TOTP Setup (first-time only)
-// ========================
-const TOTPSetup = {
-    async confirm() {
-        const input = document.getElementById('setup-otp-input');
-        const result = document.getElementById('setup-result');
-        if (!input || !result) return;
-        const code = input.value.trim();
-        if (code.length !== 6) { result.innerHTML = '<span class="red">enter 6 digits</span>'; return; }
-        try {
-            const res = await fetch(API_BASE + '/auth/setup/confirm', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code }),
-            });
-            const data = await res.json();
-            if (!res.ok) {
-                result.innerHTML = `<span class="red">✗ ${escHtml(data.error || 'invalid code')}</span>`;
-                input.value = '';
-                input.focus();
-                return;
-            }
-            // Save session from confirm
-            sessionStorage.setItem('pgaio_session', data.data.sessionId);
-            IdleTracker.reset();
-            result.innerHTML = '<span class="green">✓ saved! redirecting...</span>';
-            showToast('TOTP configured successfully', 'success');
-            setTimeout(() => { location.hash = '#dashboard'; navigate(); }, 1000);
-        } catch (e) {
-            result.innerHTML = '<span class="red">connection error</span>';
-        }
-    }
-};
-
-// ========================
 // Init
 // ========================
 document.addEventListener('DOMContentLoaded', async () => {
     lucide.createIcons();
     IdleTracker.start();
 
-    // Check auth status
-    try {
-        const res = await api('/auth/status');
-        const { setup } = res.data || {};
-        if (!setup) {
-            // Force to setup page
-            location.hash = '#auth';
-        }
-    } catch (e) { /* continue */ }
-
-    navigate();
-    window.addEventListener('hashchange', navigate);
+    // Always require the dashboard password before loading any API-backed page.
+    sessionStorage.removeItem('pgaio_session');
+    showLoginModal(() => {
+        navigate();
+        window.addEventListener('hashchange', navigate);
+    });
     const btn = document.getElementById('btn-refresh');
     if (btn) btn.addEventListener('click', navigate);
 });
