@@ -26,7 +26,7 @@ update:
 # Docker
 # ========================
 
-IMAGE ?= cr.0xh4ck3d.dev/c/pgaio:18.6.0
+IMAGE ?= sgp.vultrcr.com/695w/pgaio:18.6.0
 
 push:
 	docker build --platform linux/amd64,linux/arm64 -t $(IMAGE) .
