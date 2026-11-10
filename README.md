@@ -1,0 +1,207 @@
+# PGAIO
+
+**PGAIO** is an all-in-one PostgreSQL management and observability workspace. It packages PostgreSQL, a Go web dashboard, PgBouncer, WAL-G, and useful PostgreSQL extensions into one container so a database can be monitored, maintained, backed up, and tuned from a single interface.
+
+> **Project status:** Early-stage software. Review the security, storage, backup, and network settings before using it with production data.
+
+## What it includes
+
+- Real-time PostgreSQL monitoring for database activity, connections, replication, WAL, system resources, and background writer metrics.
+- A browser-based SQL editor with schema browsing, snippets, query history, slow-query inspection, and saved execution plans.
+- Backup and recovery workflows powered by WAL-G and S3-compatible object storage, including scheduled backups, verification, retention, and point-in-time recovery.
+- PgBouncer metrics and administrative controls, plus connection profiles for routing supported features to PostgreSQL or PgBouncer.
+- Maintenance tooling for vacuum and bloat analysis, lock trees, index recommendations, online `pg_repack`, extensions, roles, configuration, logs, and database import/export jobs.
+- A tuning wizard, schema-drift checks, Telegram health alerts, and password protection for state-changing actions.
+
+## Screenshots
+
+Captured from a local demo instance.
+
+### Monitoring dashboard
+
+Real-time database activity, connections, transaction charts, and system resources.
+
+![PGAIO dashboard showing PostgreSQL metrics, transaction charts, and system resources](docs/screenshots/dashboard.png)
+
+### SQL editor
+
+Write SQL with syntax highlighting and inspect query results in the browser.
+
+![PGAIO SQL editor showing a table-size query and its results](docs/screenshots/sql-editor.png)
+
+### Extension manager
+
+Browse available PostgreSQL extensions and manage installed extensions per database.
+
+![PGAIO extension manager listing PostgreSQL extensions, versions, and installation controls](docs/screenshots/extensions.png)
+
+## Architecture
+
+```text
+Browser
+  |
+  v
+PGAIO web UI and Go API (:8080)
+  |                |
+  v                v
+PostgreSQL (:5432) PgBouncer (:6432)
+  |
+  v
+WAL-G --> S3-compatible storage
+```
+
+The development Compose stack also starts Silo for local S3-compatible backup testing and Redis for experimentation.
+
+## Quick start
+
+### Prerequisites
+
+- Docker Engine with Docker Compose v2
+- At least 2 GB of available memory for the local stack
+
+Start the development environment:
+
+```bash
+docker compose up --build -d
+```
+
+Open the dashboard at [http://localhost:8080](http://localhost:8080). On the first start, PGAIO generates a dashboard password and prints it once in the container log:
+
+```bash
+docker compose logs pgaio
+```
+
+Local service endpoints:
+
+| Service | Address | Development credentials |
+| --- | --- | --- |
+| PGAIO dashboard | `http://localhost:8080` | Password printed in `docker compose logs pgaio` on first start |
+| PostgreSQL | `localhost:5432` | user `postgres`, password `postgres` |
+| MinIO API | `http://localhost:9000` | `minioadmin` / `minioadmin` |
+| MinIO Console | `http://localhost:9001` | `minioadmin` / `minioadmin` |
+| Redis | `localhost:6379` | no password |
+
+Follow the logs while the services start:
+
+```bash
+docker compose logs -f pgaio
+```
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
+## Configuration
+
+The bundled `docker-compose.yml` is intended for development and testing. It configures MinIO and WAL-G with public sample credentials and an example encryption key. Do not deploy those values or expose the listed ports in production.
+
+For a real S3-compatible backup target, provide these variables to the `pgaio` service:
+
+| Variable | Purpose |
+| --- | --- |
+| `WALG_S3_PREFIX` | Backup prefix, for example `s3://my-bucket/wal-g` |
+| `AWS_ACCESS_KEY_ID` | Object-storage access key |
+| `AWS_SECRET_ACCESS_KEY` | Object-storage secret key |
+| `AWS_ENDPOINT` | S3-compatible endpoint; omit or adapt for AWS S3 |
+| `AWS_REGION` | Storage region, default `us-east-1` |
+| `AWS_S3_FORCE_PATH_STYLE` | Use path-style S3 URLs when required by the provider |
+| `WALG_LIBSODIUM_KEY` | Optional WAL-G encryption key; generate and store it securely |
+
+Useful application variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PGAIO_PORT` | `8080` | Port for the web UI and API |
+| `DATABASE_URL` | - | PostgreSQL connection string for the Go backend |
+| `PGHOST` / `PGPORT` | `/tmp` / `5432` | PostgreSQL host and port when `DATABASE_URL` is not set |
+| `POSTGRESQL_USERNAME` / `POSTGRESQL_PASSWORD` | `postgres` / `postgres` | Primary PostgreSQL and PgBouncer admin credentials |
+| `POSTGRESQL_DATABASE` | `postgres` | Default database |
+| `PGBOUNCER_ADMIN_ADDR` | `127.0.0.1:6432` | PgBouncer admin endpoint |
+| `PGAIO_PASSWORD` | - | Dashboard password; when omitted, a secure password is generated and persisted on first start |
+
+PGAIO persists its dashboard settings and generated password under `/bitnami/postgresql`. Mount persistent volumes for PostgreSQL data and this directory before relying on backups, scheduled jobs, settings, or authentication across container recreation.
+
+## Backup and recovery API
+
+Log in with `POST /api/auth/login` and send the returned session ID in the `X-Session-ID` header for subsequent requests. Backup and restore requests return a `jobId`; poll `GET /api/jobs/{jobId}` for the final result.
+
+| Request | JSON body | Behavior |
+| --- | --- | --- |
+| `POST /api/backups/trigger` | `{"kind":"full"}` | Create a full backup, including the first backup for a new cluster |
+| `POST /api/backups/trigger` | `{"kind":"incremental"}` or an empty body | Create an incremental backup; skipped if no full base exists |
+| `POST /api/backups/restore` | `{"backupName":"<name>"}` | Restore the selected full or incremental backup to its earliest consistent point |
+| `POST /api/backups/restore` | `{"backupName":"LATEST","targetTime":"2026-11-07T02:00:00+04:00"}` | Select the newest backup completed before the target and replay WAL on its timeline to that instant |
+
+PITR accepts RFC3339 timestamps with an explicit offset. Legacy timestamps without an offset are interpreted as UTC. An explicitly selected backup must also be complete before the target. Invalid backup names, future targets, and targets before all available backups are rejected before PostgreSQL is stopped.
+
+Restore stages the backup in a temporary subdirectory of the data volume before replacing current data, so allow enough free disk space for the fetched backup. The API stays available while PostgreSQL recovers. A successful restore job means PostgreSQL has completed recovery; an unreachable WAL target produces a failed job with log details. The same API process can retry a failed recovery. After restoring an earlier state, create a new full backup to start a new chain.
+
+## Development
+
+The backend requires Go 1.26 or newer. The frontend is embedded in the Go binary, so no Node.js build step is needed.
+
+The Dockerfile uses the Dockerfile 1.19 frontend for `COPY --exclude` and BuildKit bind mounts. It splits the pinned PostgreSQL filesystem into smaller runtime layers and mounts bundled dependency archives during installation so the archives are not retained in the image. When changing the PostgreSQL base digest, keep the runtime environment and volume declarations in `runtime-base` aligned with the new base image.
+
+```bash
+make build       # Build the Go backend to bin/pgaio
+make dev         # Run the backend locally
+make test        # Run Go tests
+make vet         # Run Go vet
+```
+
+Use `docker compose up --build -d` to start the development stack. For image builds and registry pushes, use the [container build guide](docs/container-build.md).
+
+To exercise backup and recovery against a fresh, isolated PostgreSQL/S3 stack:
+
+```bash
+docker build --platform linux/amd64 -t pgaio:backup-api-test .
+python3 tests/integration/backup_api.py --image pgaio:backup-api-test
+```
+
+The integration test builds and mounts the current backend and entrypoint scripts, checks full/incremental backups, verifies restored row counts and checksums, tests PITR with an explicit timezone and a newer backup present, and checks failure reporting and retry. It removes its own containers, anonymous volumes, and network and prints the path to the API transcript and logs.
+
+The main implementation lives in `backend/`:
+
+```text
+backend/
+  handler/       HTTP handlers for the dashboard API
+  service/       PostgreSQL, WAL-G, S3, monitoring, and job services
+  server/        Route registration and HTTP server setup
+  web/           Embedded static dashboard assets
+pgbouncer/       PgBouncer configuration
+postgresql/      PostgreSQL startup and extension setup
+```
+
+## Security notes
+
+- Treat the dashboard as an administrative interface. Place it behind a trusted network boundary and HTTPS reverse proxy; do not publish it directly to the internet.
+- Keep the generated dashboard password private, or set `PGAIO_PASSWORD` through a secrets manager. Sessions are held in memory and expire after 15 minutes of inactivity.
+- Use dedicated least-privilege credentials where possible. Several features intentionally require elevated PostgreSQL permissions, including maintenance, extension management, configuration changes, and database restore.
+- Keep object-storage credentials and `WALG_LIBSODIUM_KEY` outside version control, ideally in a secrets manager.
+- Test backups and restore procedures regularly. A successful upload is not a substitute for a verified restore.
+
+## Built with
+
+- [PostgreSQL](https://www.postgresql.org/)
+- [PgBouncer](https://www.pgbouncer.org/)
+- [WAL-G](https://wal-g.readthedocs.io/)
+- [Go](https://go.dev/) and [pgx](https://github.com/jackc/pgx)
+- [MinIO](https://min.io/) for the local S3-compatible development environment
+- `pg_stat_statements`, `pg_idkit`, and `pg_repack`
+
+## Contributing
+
+Issues and pull requests are welcome. For a code change, please keep the scope focused and run:
+
+```bash
+make vet
+make test
+```
+
+If you are reporting a security issue, please do not open a public issue with credentials, backups, or a proof of exploit.
+
+## License
+
+This repository does not currently include a license file. Add an explicit open-source license (for example, Apache-2.0 or MIT) before publishing or accepting external contributions, then update this section to link to it.

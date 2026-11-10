@@ -1,0 +1,126 @@
+#!/bin/bash
+set -e
+
+echo "🚀 PGAIO — All-in-One PostgreSQL starting..."
+
+# ========================
+# Generate PgBouncer userlist
+# ========================
+PG_USER="${POSTGRESQL_USERNAME:-postgres}"
+PG_PASS="${POSTGRESQL_PASSWORD:-postgres}"
+
+echo "\"${PG_USER}\" \"${PG_PASS}\"" > /etc/pgbouncer/userlist.txt
+echo "\"pgbouncer\" \"${PG_PASS}\"" >> /etc/pgbouncer/userlist.txt
+echo "✅ PgBouncer userlist generated"
+
+# ========================
+# Export env for WAL-G
+# ========================
+if [ -n "$WALG_S3_PREFIX" ]; then
+    export AWS_S3_FORCE_PATH_STYLE="${AWS_S3_FORCE_PATH_STYLE:-true}"
+    export WALG_COMPRESSION_METHOD="${WALG_COMPRESSION_METHOD:-lz4}"
+    export WALG_UPLOAD_CONCURRENCY="${WALG_UPLOAD_CONCURRENCY:-2}"
+    export WALG_DOWNLOAD_CONCURRENCY="${WALG_DOWNLOAD_CONCURRENCY:-4}"
+    echo "✅ WAL-G configured (prefix: $WALG_S3_PREFIX)"
+fi
+
+# ========================
+# Export env for PGAIO backend
+# ========================
+export PGHOST="${PGHOST:-/tmp}"
+export PGPORT="${PGPORT:-5432}"
+export PGAIO_PORT="${PGAIO_PORT:-8080}"
+export PGBOUNCER_ADMIN_ADDR="${PGBOUNCER_ADMIN_ADDR:-127.0.0.1:6432}"
+export PGBOUNCER_ADMIN_USER="${PGBOUNCER_ADMIN_USER:-pgbouncer}"
+
+# ========================
+# Trap for graceful shutdown
+# ========================
+cleanup() {
+    trap - SIGTERM SIGINT
+    echo "🛑 Shutting down..."
+    # Send SIGTERM and wait for the processes to exit so PgBouncer has a chance
+    # to remove its own pidfile before the container goes away.
+    for child in ${PGAIO_PID:-} ${PGB_PID:-}; do
+        kill "$child" 2>/dev/null || true
+    done
+    # Restores start a new postmaster via pg_ctl, so PG_PID may no longer
+    # identify the running server. Stop the current cluster by its data dir.
+    pg_ctl stop -D "${PGDATA:-/bitnami/postgresql/data}" -m fast -t 30 2>/dev/null || true
+    for child in ${PGAIO_PID:-} ${PGB_PID:-}; do
+        wait "$child" 2>/dev/null || true
+    done
+    echo "👋 All processes stopped"
+    exit 0
+}
+trap cleanup SIGTERM SIGINT
+
+# ========================
+# Start PostgreSQL (foreground via entrypoint)
+# ========================
+echo "🐘 Starting PostgreSQL..."
+/docker-entrypoint-pg.sh /opt/bitnami/scripts/postgresql/run.sh &
+PG_PID=$!
+
+# Wait for PostgreSQL to be ready
+echo "⏳ Waiting for PostgreSQL..."
+for i in $(seq 1 60); do
+    if pg_isready -h /tmp -U "${PG_USER}" -q 2>/dev/null; then
+        echo "✅ PostgreSQL is ready"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        echo "❌ PostgreSQL failed to start"
+        exit 1
+    fi
+    sleep 1
+done
+
+# ========================
+# Start PgBouncer
+# ========================
+# Remove a stale pidfile left behind by an unclean shutdown (e.g. SIGKILL /
+# OOM / power loss), which otherwise makes PgBouncer refuse to start with
+# "pidfile exists, another instance running?". Only remove it when the PID it
+# references is no longer alive — never reap a genuinely running instance.
+PGB_PIDFILE="/tmp/pgbouncer.pid"
+if [ -f "$PGB_PIDFILE" ]; then
+    STALE_PID=$(cat "$PGB_PIDFILE" 2>/dev/null)
+    if [ -n "$STALE_PID" ] && kill -0 "$STALE_PID" 2>/dev/null; then
+        echo "❌ PgBouncer already running (pid: $STALE_PID), aborting"
+        exit 1
+    fi
+    echo "🧹 Removing stale PgBouncer pidfile (pid: ${STALE_PID:-empty})"
+    rm -f "$PGB_PIDFILE"
+fi
+
+echo "⚡ Starting PgBouncer..."
+pgbouncer /etc/pgbouncer/pgbouncer.ini &
+PGB_PID=$!
+echo "✅ PgBouncer started (pid: $PGB_PID)"
+
+# ========================
+# Start PGAIO Backend
+# ========================
+echo "🌐 Starting PGAIO Web UI..."
+/usr/local/bin/pgaio &
+PGAIO_PID=$!
+echo "✅ PGAIO Backend started (pid: $PGAIO_PID)"
+
+echo ""
+echo "========================================="
+echo "  PGAIO — All-in-One PostgreSQL"
+echo "  PostgreSQL : :5432"
+echo "  PgBouncer  : :6432"
+echo "  Web UI     : :${PGAIO_PORT:-8080}"
+echo "========================================="
+echo ""
+
+# PostgreSQL is stopped and restarted by the admin API during recovery.
+# Keep the API alive during that operation, including failed restores, so
+# users can inspect the job and retry. Supervise the API and PgBouncer here.
+wait -n "$PGB_PID" "$PGAIO_PID" 2>/dev/null || true
+
+# If any process dies, shut down everything
+echo "⚠️  A process exited, shutting down..."
+cleanup

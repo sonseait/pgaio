@@ -1,0 +1,7 @@
+services:
+  pgaio:
+    image: ${REGISTRY:?Set REGISTRY}/${PROJECT:?Set PROJECT}/pgaio:${IMAGE_TAG:?Set IMAGE_TAG}
+    platform: linux/amd64
+    build:
+      context: ..
+      dockerfile: Dockerfile

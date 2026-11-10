@@ -1,0 +1,310 @@
+package handler
+
+import (
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"pgaio/model"
+	"pgaio/service"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type DatabaseHandler struct {
+	pool *pgxpool.Pool
+	jobs *service.JobStore
+}
+
+func NewDatabaseHandler(pool *pgxpool.Pool, jobs *service.JobStore) *DatabaseHandler {
+	return &DatabaseHandler{pool: pool, jobs: jobs}
+}
+
+// ExportDatabase starts a pg_dump job and stores the artifact for later download.
+func (h *DatabaseHandler) ExportDatabase(w http.ResponseWriter, r *http.Request) {
+	dbName := r.URL.Query().Get("database")
+	if dbName == "" {
+		dbName = getHandlerEnv("POSTGRESQL_DATABASE", "postgres")
+	}
+	format := r.URL.Query().Get("format") // "sql" or "custom"
+	if format == "" {
+		format = "custom"
+	}
+	dataOnly := r.URL.Query().Get("dataOnly") == "true"
+
+	var args []string
+	var ext, contentType string
+
+	switch format {
+	case "sql":
+		args = []string{"-h", "/tmp", "-U", getHandlerEnv("POSTGRESQL_USERNAME", "postgres"), "-d", dbName}
+		ext = ".sql"
+		contentType = "application/sql"
+	default:
+		args = []string{"-h", "/tmp", "-U", getHandlerEnv("POSTGRESQL_USERNAME", "postgres"), "-d", dbName, "-Fc"}
+		ext = ".dump"
+		contentType = "application/octet-stream"
+	}
+
+	// Data-only: skip schema (CREATE TABLE, etc.), export only INSERT/COPY data
+	if dataOnly {
+		args = append(args, "--data-only")
+		ext = "-data-only" + ext
+	}
+
+	timestamp := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("%s-%s%s", dbName, timestamp, ext)
+	job := h.jobs.Start("export", filename, dbName, "export queued", map[string]string{
+		"format": format,
+	})
+
+	go func() {
+		h.jobs.Update(job.ID, "running pg_dump", "")
+		tmpFile, err := os.CreateTemp("", "pgaio-export-*"+ext)
+		if err != nil {
+			h.jobs.Fail(job.ID, "failed to create export file", err.Error())
+			return
+		}
+		defer tmpFile.Close()
+
+		cmd := exec.Command("pg_dump", args...)
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+getHandlerEnv("POSTGRESQL_PASSWORD", ""))
+		cmd.Stdout = tmpFile
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			_ = os.Remove(tmpFile.Name())
+			h.jobs.Fail(job.ID, "pg_dump failed", stderr.String())
+			log.Printf("[database] pg_dump error: %v", err)
+			return
+		}
+
+		info, err := tmpFile.Stat()
+		if err != nil {
+			_ = os.Remove(tmpFile.Name())
+			h.jobs.Fail(job.ID, "export completed but file metadata is unavailable", err.Error())
+			return
+		}
+
+		h.jobs.CompleteWithArtifact(job.ID, "export ready for download", &service.JobArtifact{
+			Path:        tmpFile.Name(),
+			Name:        filename,
+			ContentType: contentType,
+			SizeBytes:   info.Size(),
+		})
+	}()
+
+	writeJSON(w, http.StatusAccepted, model.APIResponse{
+		Success: true,
+		Data: map[string]string{
+			"jobId":   job.ID,
+			"message": "export started",
+			"status":  "running",
+		},
+	})
+}
+
+// ImportDatabase accepts a SQL/dump file upload and restores it.
+func (h *DatabaseHandler) ImportDatabase(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(512 << 20); err != nil { // 512MB max
+		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "failed to parse upload: " + err.Error()})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, model.APIResponse{Error: "file required"})
+		return
+	}
+	defer file.Close()
+
+	dbName := r.FormValue("database")
+	if dbName == "" {
+		dbName = getHandlerEnv("POSTGRESQL_DATABASE", "postgres")
+	}
+
+	// Import options
+	dataOnly := r.FormValue("dataOnly") == "true"
+	disableTriggers := r.FormValue("disableTriggers") == "true"
+	singleTx := r.FormValue("singleTransaction") == "true"
+	clean := r.FormValue("clean") == "true"
+	noTablespaces := r.FormValue("noTablespaces") == "true"
+
+	// Save uploaded file to temp
+	tmpFile, err := os.CreateTemp("", "pgaio-import-*"+filepath.Ext(header.Filename))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: "failed to save upload"})
+		return
+	}
+	tmpFile.Close()
+
+	// Determine restore method based on file extension
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	pgUser := getHandlerEnv("POSTGRESQL_USERNAME", "postgres")
+
+	// Build options description for logging
+	var opts []string
+	if dataOnly {
+		opts = append(opts, "data-only")
+	}
+	if disableTriggers {
+		opts = append(opts, "disable-triggers")
+	}
+	if singleTx {
+		opts = append(opts, "single-tx")
+	}
+	if clean {
+		opts = append(opts, "clean")
+	}
+	if noTablespaces {
+		opts = append(opts, "no-tablespaces")
+	}
+
+	job := h.jobs.Start("import", header.Filename, dbName, "import queued", map[string]string{
+		"file": header.Filename,
+	})
+
+	go func() {
+		defer os.Remove(tmpPath)
+		optsStr := "none"
+		if len(opts) > 0 {
+			optsStr = strings.Join(opts, ", ")
+		}
+		h.jobs.Update(job.ID, "restoring database dump", "")
+		log.Printf("[database] import started [%s]: %s (%s) into %s", optsStr, header.Filename, ext, dbName)
+
+		env := append(os.Environ(), "PGPASSWORD="+getHandlerEnv("POSTGRESQL_PASSWORD", ""))
+
+		isCustom := ext == ".dump" || ext == ".backup"
+
+		// For custom-format dumps, pg_restore --clean --if-exists drops and
+		// recreates objects from the dump itself, which is safer than a manual
+		// TRUNCATE (it also handles schema changes — dropped/renamed columns).
+		// We therefore only run the manual TRUNCATE for plain-SQL imports, where
+		// psql has no equivalent built-in clean step.
+		if clean && !isCustom {
+			h.jobs.Update(job.ID, "cleaning non-system schemas before import", "")
+			log.Println("[database] cleaning: truncating all user tables...")
+			truncSQL := `DO $$ DECLARE r RECORD; BEGIN
+				FOR r IN (
+					SELECT schemaname, tablename
+					FROM pg_tables
+					WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+				) LOOP
+					EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.schemaname) || '.' || quote_ident(r.tablename) || ' CASCADE';
+				END LOOP; END $$;`
+			truncCmd := exec.Command("psql", "-h", "/tmp", "-U", pgUser, "-d", dbName, "-c", truncSQL)
+			truncCmd.Env = env
+			if out, err := truncCmd.CombinedOutput(); err != nil {
+				h.jobs.Fail(job.ID, "clean step failed before import", string(out))
+				log.Printf("[database] truncate warning: %v\n%s", err, string(out))
+				return
+			}
+			log.Println("[database] truncate completed")
+		}
+
+		var cmd *exec.Cmd
+
+		if isCustom {
+			// Custom format — use pg_restore
+			restoreArgs := []string{"-h", "/tmp", "-U", pgUser, "-d", dbName,
+				"--no-owner", "--no-privileges"}
+			// --clean --if-exists drops existing objects (no error if absent)
+			// before recreating them, giving a clean restore to the dump's state.
+			// Skipped for data-only restores, where there is no schema to drop.
+			if clean && !dataOnly {
+				restoreArgs = append(restoreArgs, "--clean", "--if-exists")
+			}
+			if dataOnly {
+				restoreArgs = append(restoreArgs, "--data-only")
+			}
+			// pg_restore only accepts --disable-triggers together with
+			// --data-only; applying it to a full restore aborts with an error.
+			// Silently scope it to data-only restores so the common one-click
+			// full restore never trips over a leftover default checkbox.
+			if disableTriggers && dataOnly {
+				restoreArgs = append(restoreArgs, "--disable-triggers")
+			}
+			if singleTx {
+				restoreArgs = append(restoreArgs, "--single-transaction")
+			}
+			if noTablespaces {
+				restoreArgs = append(restoreArgs, "--no-tablespaces")
+			}
+			restoreArgs = append(restoreArgs, tmpPath)
+			cmd = exec.Command("pg_restore", restoreArgs...)
+		} else {
+			// SQL format — use psql
+			psqlArgs := []string{"-h", "/tmp", "-U", pgUser, "-d", dbName}
+			if singleTx {
+				psqlArgs = append(psqlArgs, "--single-transaction")
+			}
+			psqlArgs = append(psqlArgs, "-f", tmpPath)
+			cmd = exec.Command("psql", psqlArgs...)
+		}
+		cmd.Env = env
+
+		if out, err := cmd.CombinedOutput(); err != nil {
+			h.jobs.Fail(job.ID, "import failed", string(out))
+			log.Printf("[database] import failed: %v\n%s", err, string(out))
+		} else {
+			h.jobs.Complete(job.ID, "import completed successfully")
+			log.Printf("[database] ✅ import completed: %s", header.Filename)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, model.APIResponse{
+		Success: true,
+		Data: map[string]string{
+			"jobId":    job.ID,
+			"message":  fmt.Sprintf("Import started for %s into %s", header.Filename, dbName),
+			"status":   "running",
+			"filename": header.Filename,
+		},
+	})
+}
+
+// ListDatabases returns a list of databases.
+func (h *DatabaseHandler) ListDatabases(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.pool.Query(r.Context(), `
+		SELECT datname FROM pg_database
+		WHERE datistemplate = false
+		ORDER BY datname
+	`)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.APIResponse{Error: err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var dbs []string
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil {
+			dbs = append(dbs, name)
+		}
+	}
+	writeJSON(w, http.StatusOK, model.APIResponse{Success: true, Data: dbs})
+}
+
+func getHandlerEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
